@@ -289,14 +289,16 @@ async def _run_job(job_id: str, stock_code: str, company_name: str | None, mode:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return TEMPLATES.TemplateResponse(name=
-        "index.html",
-        context={
-            "request": request,
-            "edinet_lookback": settings.edinet_lookback_days,
-            "edinet_doc_type": settings.edinet_doc_type,
-        },
-    )
+    return FileResponse(str(BASE_DIR / "templates" / "index.html"))
+
+
+
+
+
+
+
+
+
 
 
 @app.post("/start")
@@ -754,11 +756,4 @@ async def spa_catch_all(request: Request, full_path: str):
     # Skip API, static, and file-download paths
     if full_path.startswith(("api/", "static/", "start", "status/", "stream/", "jobs/", "download")):
         raise HTTPException(status_code=404)
-    return TEMPLATES.TemplateResponse(name=
-        "index.html",
-        context={
-            "request": request,
-            "edinet_lookback": settings.edinet_lookback_days,
-            "edinet_doc_type": settings.edinet_doc_type,
-        },
-    )
+    return FileResponse(str(BASE_DIR / "templates" / "index.html"))
