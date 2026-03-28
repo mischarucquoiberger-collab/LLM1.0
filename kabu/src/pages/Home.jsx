@@ -1,0 +1,429 @@
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { gsap } from "gsap";
+import { Download, Trash2, BookOpen, ArrowUpRight, Search } from "lucide-react";
+import SearchBar from "@/components/home/SearchBar";
+import { useCircleTransition } from "@/components/CircleTransition";
+import { deleteJob } from "@/api/backend";
+import SourcesModal from "@/components/report/SourcesModal";
+import KineticType from "@/components/KineticType";
+
+export default function Home() {
+  const [history, setHistory] = useState([]);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [activeSources, setActiveSources] = useState([]);
+  const [activeCompany, setActiveCompany] = useState("");
+  const [hoveredItem, setHoveredItem] = useState(null);
+  const { navigateWithReveal } = useCircleTransition();
+
+  // refs for GSAP entry animation
+  const titleRef = useRef(null);
+  const subRef = useRef(null);
+  const searchRef = useRef(null);
+  const recentRef = useRef(null);
+  const navRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("reports_history");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter((h) => h && h.jobId && (h.companyName || h.ticker));
+          // Deduplicate by jobId (keep first/newest occurrence)
+          const seen = new Set();
+          const deduped = valid.filter((h) => {
+            if (seen.has(h.jobId)) return false;
+            seen.add(h.jobId);
+            return true;
+          });
+          if (deduped.length < valid.length) {
+            localStorage.setItem("reports_history", JSON.stringify(deduped));
+          }
+          setHistory(deduped);
+        }
+      }
+    } catch { setHistory([]); }
+  }, []);
+
+  // entry animation
+  useEffect(() => {
+    const items = [titleRef, subRef, searchRef, navRef, recentRef].map((r) => r.current).filter(Boolean);
+    gsap.set(items, { opacity: 0, y: "40%" });
+    const tween = gsap.to(items, {
+      duration: 1.2,
+      ease: "expo",
+      opacity: 1,
+      y: "0%",
+      stagger: 0.07,
+      delay: 0.15,
+    });
+    return () => tween.kill();
+  }, []);
+
+  const formatDate = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = now - d;
+    if (diff < 0) return "just now";
+    if (diff < 60000) return "just now";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+    return d.toLocaleString([], { month: "short", day: "numeric" });
+  };
+
+  const handleDelete = useCallback(async (jobId) => {
+    setHistory((prev) => {
+      const updated = prev.filter((h) => h.jobId !== jobId);
+      localStorage.setItem("reports_history", JSON.stringify(updated));
+      return updated;
+    });
+    try { await deleteJob(jobId); } catch {}
+  }, []);
+
+  const handleView = useCallback((item, e) => {
+    const makeInline = (u) => {
+      if (!u) return null;
+      if (u.includes("inline=1")) return u;
+      return u.includes("?") ? `${u}&inline=1` : `${u}?inline=1`;
+    };
+    const direct = makeInline(item.html) || makeInline(item.pdf) || item.html || item.pdf;
+    if (!direct) return;
+    const title = item.companyName || item.ticker;
+    const params = new URLSearchParams({ url: direct, title, jobId: item.jobId });
+    navigateWithReveal(`/Viewer?${params.toString()}`, e);
+  }, [navigateWithReveal]);
+
+  return (
+    <main style={{ position: "relative", overflowX: "hidden", width: "100%", minHeight: "100vh", background: "#fff" }}>
+      <KineticType settled />
+
+      {/* Back button */}
+      <button
+        type="button"
+        onClick={(e) => navigateWithReveal("/", e)}
+        style={{
+          background: "none",
+          border: 0,
+          padding: 0,
+          position: "absolute",
+          top: "clamp(1.2rem, 3vw, 2.5rem)",
+          left: "clamp(1.2rem, 3vw, 2.5rem)",
+          zIndex: 1000,
+          cursor: "pointer",
+          width: "clamp(36px, 6vw, 50px)",
+          stroke: "#0a0a0a",
+          transition: "filter 0.3s ease",
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.filter = "opacity(0.35)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.filter = "none"; }}
+      >
+        <svg viewBox="0 0 50 9" width="100%" strokeLinecap="round">
+          <path d="M0 4.5l5-3M0 4.5l5 3M50 4.5h-77" fill="none" />
+        </svg>
+      </button>
+
+      {/* Content */}
+      <section
+        style={{
+          position: "relative",
+          zIndex: 10,
+          display: "flex",
+          flexDirection: "column",
+          minHeight: "100vh",
+          padding: "clamp(4rem, 8vh, 6rem) clamp(1rem, 3vw, 2rem)",
+        }}
+      >
+        <div style={{ width: "100%", maxWidth: 540, margin: "auto" }}>
+          <h2
+            ref={titleRef}
+            style={{
+              fontFamily: "'Space Grotesk', sans-serif",
+              fontSize: "clamp(1.8rem, 3.5vw, 2.5rem)",
+              fontWeight: 700,
+              letterSpacing: "-0.03em",
+              margin: "0 0 0.5rem",
+              color: "#0a0a0a",
+              textAlign: "center",
+            }}
+          >
+            Research
+          </h2>
+          <p
+            ref={subRef}
+            style={{
+              textAlign: "center",
+              fontFamily: "'Space Grotesk', sans-serif",
+              fontSize: "0.85rem",
+              color: "rgba(0,0,0,0.4)",
+              fontWeight: 300,
+              margin: "0 0 2rem",
+            }}
+          >
+            Creation of a real-time custom research report - delivered in minutes.
+          </p>
+
+          <div ref={searchRef}>
+            <SearchBar />
+          </div>
+
+          {/* Query link */}
+          <div ref={navRef} style={{ display: "flex", justifyContent: "center", marginTop: "1.2rem" }}>
+            <button
+              type="button"
+              onClick={(e) => navigateWithReveal("/Query", e)}
+              style={{
+                fontFamily: "'Space Grotesk', sans-serif",
+                fontSize: "0.6rem",
+                fontWeight: 500,
+                letterSpacing: "0.18em",
+                textTransform: "uppercase",
+                color: "rgba(0,0,0,0.22)",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "5px 10px",
+                borderRadius: 6,
+                transition: "all 0.2s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = "rgba(0,0,0,0.55)";
+                e.currentTarget.style.background = "rgba(0,0,0,0.03)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = "rgba(0,0,0,0.22)";
+                e.currentTarget.style.background = "none";
+              }}
+            >
+              Query
+            </button>
+          </div>
+
+          {/* Recent reports */}
+          {history.length > 0 && (
+            <div ref={recentRef} style={{ marginTop: "3rem" }}>
+              <span
+                style={{
+                  display: "block",
+                  fontFamily: "'Space Grotesk', sans-serif",
+                  fontSize: "0.6rem",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.25em",
+                  color: "rgba(0,0,0,0.4)",
+                  fontWeight: 500,
+                  marginBottom: "1rem",
+                }}
+              >
+                Recent
+              </span>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                {history.slice(0, 12).map((item) => {
+                  const isHov = hoveredItem === item.jobId;
+                  return (
+                    <li
+                      key={item.jobId}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        padding: "0.85rem 0",
+                        borderTop: "1px solid rgba(0,0,0,0.08)",
+                        transition: "transform 0.4s cubic-bezier(0.16,1,0.3,1)",
+                        transform: isHov ? "translateX(6px)" : "translateX(0)",
+                        cursor: "default",
+                      }}
+                      onMouseEnter={() => setHoveredItem(item.jobId)}
+                      onMouseLeave={() => setHoveredItem(null)}
+                    >
+                      {/* Company name */}
+                      <span
+                        style={{
+                          fontFamily: "'Space Grotesk', sans-serif",
+                          fontSize: "0.85rem",
+                          fontWeight: 500,
+                          color: "#0a0a0a",
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {item.companyName}
+                      </span>
+
+                      {/* Ticker */}
+                      <span
+                        style={{
+                          fontFamily: "'Space Grotesk', sans-serif",
+                          fontSize: "0.7rem",
+                          fontWeight: 500,
+                          color: "var(--color-accent, #de5f40)",
+                          letterSpacing: "0.05em",
+                          marginRight: "1rem",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {item.ticker}
+                      </span>
+
+                      {/* Time */}
+                      <span
+                        style={{
+                          fontFamily: "'Space Grotesk', sans-serif",
+                          fontSize: "0.7rem",
+                          color: "rgba(0,0,0,0.4)",
+                          fontWeight: 300,
+                          marginRight: "1rem",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {formatDate(item.finishedAt)}
+                      </span>
+
+                      {/* Actions — visible on hover */}
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          opacity: isHov ? 1 : 0,
+                          transition: "opacity 0.2s ease",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {item.sources && item.sources.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveSources(item.sources);
+                              setActiveCompany(item.companyName || item.ticker);
+                              setSourcesOpen(true);
+                            }}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              padding: "4px 6px",
+                              borderRadius: 4,
+                              color: "rgba(0,0,0,0.3)",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 3,
+                              fontSize: "0.65rem",
+                              fontFamily: "'Space Grotesk', sans-serif",
+                              transition: "color 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(0,0,0,0.7)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(0,0,0,0.3)"; }}
+                          >
+                            <BookOpen size={12} />
+                            {item.sources.length}
+                          </button>
+                        )}
+
+                        {(item.html || item.pdf) && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleView(item, e)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              padding: "4px 8px",
+                              borderRadius: 4,
+                              color: "rgba(0,0,0,0.3)",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 3,
+                              fontSize: "0.65rem",
+                              fontFamily: "'Space Grotesk', sans-serif",
+                              fontWeight: 500,
+                              transition: "all 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = "#0a0a0a";
+                              e.currentTarget.style.color = "#fff";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = "none";
+                              e.currentTarget.style.color = "rgba(0,0,0,0.3)";
+                            }}
+                          >
+                            View <ArrowUpRight size={10} />
+                          </button>
+                        )}
+
+                        {item.pdf && (
+                          <a
+                            href={item.pdf}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              color: "rgba(0,0,0,0.2)",
+                              padding: "4px 6px",
+                              borderRadius: 4,
+                              display: "inline-flex",
+                              textDecoration: "none",
+                              transition: "color 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.color = "rgba(0,0,0,0.6)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(0,0,0,0.2)"; }}
+                          >
+                            <Download size={12} />
+                          </a>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(item.jobId)}
+                          title="Delete"
+                          style={{
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: "4px 6px",
+                            borderRadius: 4,
+                            color: "rgba(0,0,0,0.15)",
+                            display: "inline-flex",
+                            transition: "all 0.15s ease",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.color = "#cc3333";
+                            e.currentTarget.style.background = "rgba(204,51,51,0.05)";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.color = "rgba(0,0,0,0.15)";
+                            e.currentTarget.style.background = "none";
+                          }}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {/* Empty state */}
+          {history.length === 0 && (
+            <div style={{ marginTop: "4rem", textAlign: "center" }}>
+              <Search size={22} style={{ color: "rgba(0,0,0,0.15)", margin: "0 auto 14px", display: "block" }} />
+              <p style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: "0.85rem", color: "rgba(0,0,0,0.3)", fontWeight: 300 }}>
+                Search to generate your first report
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <SourcesModal
+        isOpen={sourcesOpen}
+        onClose={() => setSourcesOpen(false)}
+        sources={activeSources}
+        companyName={activeCompany}
+      />
+    </main>
+  );
+}

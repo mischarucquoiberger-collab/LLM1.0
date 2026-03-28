@@ -1,0 +1,1382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ dashboard.company_header.name_jp|default('', true) }} ({{ dashboard.company_header.ticker|default('', true) }}) Research Dashboard</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Roboto+Slab:wght@500;700&display=swap");
+    @page { size: A4; margin: 10mm 10mm 12mm 10mm; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f4f4f4;
+      font-family: "Inter", Arial, sans-serif;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      color: #111;
+      font-size: 9px;
+      line-height: 1.25;
+    }
+    .dashboard {
+      width: 210mm;
+      min-height: 297mm;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      display: grid;
+      grid-template-rows: auto auto auto auto auto 1fr auto;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 6px 8px;
+      border-bottom: 1px solid #e0e0e0;
+      gap: 8px;
+    }
+    .ticker-box {
+      background: #111;
+      color: #fff;
+      font-weight: 700;
+      font-size: 20px;
+      padding: 6px 8px;
+      min-width: 56px;
+      text-align: center;
+      font-family: "Roboto Slab", serif;
+    }
+    .company {
+      flex: 1;
+    }
+    .company .jp {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .company .en {
+      font-size: 10px;
+      color: #666;
+    }
+    .meta {
+      text-align: right;
+      min-width: 170px;
+    }
+    .meta .sector {
+      font-weight: 700;
+      font-size: 10px;
+    }
+    .meta .meta-line {
+      color: #666;
+      margin-top: 2px;
+    }
+    .tag {
+      display: inline-block;
+      margin-top: 4px;
+      background: #e6f6e6;
+      color: #0a7a0a;
+      border: 1px solid #9ad49a;
+      border-radius: 999px;
+      padding: 2px 6px;
+      font-weight: 600;
+      font-size: 8px;
+    }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      border-bottom: 1px solid #e0e0e0;
+      background: #fafafa;
+    }
+    .kpi {
+      padding: 6px 4px;
+      text-align: center;
+      border-right: 1px solid #e0e0e0;
+    }
+    .kpi:last-child { border-right: none; }
+    .kpi-label {
+      font-size: 8px;
+      text-transform: uppercase;
+      color: #777;
+      letter-spacing: 0.08em;
+    }
+    .kpi-value {
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Slab", serif;
+    }
+    .kpi-value.green { color: #00aa00; }
+
+    .summary-block {
+      padding: 6px 8px 4px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .summary-block p { margin: 2px 0 4px; text-align: justify; }
+    .summary-block ul { margin: 0 0 4px 14px; padding: 0; }
+    .summary-block li { margin-bottom: 2px; }
+
+    .outlook {
+      margin-top: 4px;
+      border: 1px solid #e0e0e0;
+      background: #f2f2f2;
+      padding: 6px;
+    }
+    .outlook-header {
+      background: #222;
+      color: #fff;
+      font-size: 8px;
+      font-weight: 700;
+      padding: 2px 4px;
+      display: inline-block;
+      margin-bottom: 4px;
+      letter-spacing: 0.1em;
+    }
+    .bullbear {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .bullbear h4 { margin: 0 0 2px; font-size: 9px; }
+    .bullbear ul { margin: 0 0 0 14px; padding: 0; }
+    .bull { color: #00aa00; font-weight: 700; }
+    .bear { color: #cc0000; font-weight: 700; }
+
+    .charts {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+      padding: 6px 8px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .chart {
+      border: 1px dashed #d0d0d0;
+      padding: 4px;
+      min-height: 60px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .chart-title {
+      font-size: 8px;
+      font-weight: 700;
+      color: #444;
+      text-transform: uppercase;
+    }
+    .bar-wrap {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 2px;
+      align-items: end;
+      height: 36px;
+      margin-top: 2px;
+    }
+    .bar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      height: 100%;
+    }
+    .bar-fill {
+      width: 100%;
+      background: #4477bb;
+      border-radius: 2px 2px 0 0;
+    }
+    .bar-fill.alt { background: #ee9900; }
+    .bar-label { font-size: 7px; color: #555; margin-top: 1px; }
+    .bar-value { font-size: 7px; color: #111; }
+    .stack {
+      height: 10px;
+      display: flex;
+      margin-top: 6px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #eee;
+    }
+    .stack span { display: block; height: 100%; }
+    .stack-foreign { background: #2E59A7; } /* Deep Blue */
+    .stack-inst { background: #56ACE0; }    /* Sky Blue */
+    .stack-corp { background: #F2994A; }    /* Orange */
+    .stack-indiv { background: #6FCF97; }   /* Green */
+    .stack-legend { display: grid; grid-template-columns: repeat(2, 1fr); font-size: 7px; margin-top: 4px; gap: 2px; }
+    
+    .range-bar {
+      height: 4px;
+      background: #eee;
+      border-radius: 2px;
+      margin: 4px 0;
+      position: relative;
+    }
+    .range-fill {
+      position: absolute;
+      height: 100%;
+      background: #0a7a0a;
+      border-radius: 2px;
+      opacity: 0.2;
+    }
+    .range-dot {
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      background: #0a7a0a;
+      border-radius: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 2px rgba(0,0,0,0.2);
+    }
+    .legend-item { display: flex; align-items: center; gap: 3px; }
+    .legend-box { width: 6px; height: 6px; border-radius: 1px; }
+
+    .data-header {
+      background: #222;
+      color: #fff;
+      padding: 2px 4px;
+      font-weight: 700;
+      font-size: 8px;
+      letter-spacing: 0.08em;
+    }
+
+    .income {
+      border-bottom: 1px solid #e0e0e0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 8px;
+    }
+    th, td { border: 1px solid #e0e0e0; padding: 2px 4px; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    thead th { background: #f2f2f2; }
+
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-bottom: 1px solid #e0e0e0;
+      min-height: 190px;
+    }
+    .col { border-right: 1px solid #e0e0e0; padding: 4px; display: flex; flex-direction: column; }
+    .col:last-child { border-right: none; }
+    .dense-table td, .dense-table th { padding: 2px 4px; }
+    .dense-table tbody tr:last-child td { border-bottom: none; }
+    .bottom-grid > .col > table:last-child { margin-bottom: 0; }
+    .bottom-grid > .col > table:last-child tr:last-child td { border-bottom: none; }
+    
+    /* Dotted leader for shareholders */
+    .shareholder-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      width: 100%;
+      margin-bottom: 2px;
+    }
+    .shareholder-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding-right: 4px;
+      flex-shrink: 1;
+    }
+    .shareholder-dots {
+      flex-grow: 1;
+      border-bottom: 1px dotted #ccc;
+      margin-bottom: 2px;
+      min-width: 10px;
+    }
+    .shareholder-pct {
+      padding-left: 4px;
+      white-space: nowrap;
+      font-weight: 700;
+    }
+    .shareholder-badge {
+      display: inline-block;
+      font-size: 6px;
+      font-weight: 700;
+      color: #fff;
+      padding: 1px 3px;
+      border-radius: 2px;
+      margin-left: 3px;
+      vertical-align: middle;
+      letter-spacing: 0.03em;
+      line-height: 1;
+    }
+
+    .footer {
+      background: #f2f2f2;
+      padding: 4px 6px;
+      font-size: 8px;
+      color: #555;
+    }
+    .footer .meta-line {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 4px;
+      border-top: 1px solid #ddd;
+      padding-top: 4px;
+      font-weight: 600;
+      color: #222;
+    }
+    .mono { font-variant-numeric: tabular-nums; font-family: "Roboto Slab", serif; }
+
+    /* ── Football-Field Valuation Panel ── */
+    .val-panel { margin: 4px 0; border: 1px solid #ccc; }
+    .val-header {
+      background: #1a1a2e; color: #fff; padding: 4px 8px;
+      display: flex; align-items: center; gap: 12px; font-size: 8px;
+    }
+    .val-header strong { font-size: 9px; letter-spacing: 0.5px; }
+    .tp-pill {
+      display: inline-block; padding: 1px 6px; border-radius: 3px;
+      font-weight: 700; font-size: 8px; font-family: "Roboto Slab", serif;
+    }
+    .tp-up   { background: #0a7a0a; color: #fff; }
+    .tp-down { background: #cc2222; color: #fff; }
+    .val-quality-bar {
+      width: 48px; height: 6px; background: #555; border-radius: 3px;
+      display: inline-block; vertical-align: middle; overflow: hidden;
+      border: 0.5px solid #777;
+    }
+    .val-quality-fill { height: 100%; border-radius: 3px; }
+    .val-field { position: relative; padding: 4px 0; }
+    .val-row {
+      display: flex; align-items: center; height: 15px;
+      font-size: 7.5px; margin: 2px 0;
+    }
+    .val-row-primary { background: #f0f8f0; }
+    .val-label {
+      width: 88px; text-align: right; padding-right: 6px;
+      font-weight: 600; white-space: nowrap; flex-shrink: 0;
+      font-size: 7px;
+    }
+    .val-track { flex: 1; position: relative; height: 9px; }
+    .val-band {
+      position: absolute; top: 1px; height: 7px;
+      background: #b8cce4; border-radius: 2px;
+    }
+    .val-band-primary { background: #a3c9a3; }
+    .val-band-blended {
+      background: linear-gradient(90deg, #6abf6a, #0a7a0a);
+      height: 9px; top: 0; border-radius: 3px;
+    }
+    .val-dot {
+      position: absolute; top: 50%; width: 6px; height: 6px;
+      background: #1a3a5c; border-radius: 50%;
+      transform: translate(-50%, -50%); z-index: 2;
+    }
+    .val-dot-blended {
+      background: #0a7a0a; width: 8px; height: 8px;
+      border: 1px solid #fff; box-shadow: 0 0 2px rgba(0,0,0,.3);
+    }
+    .val-current-line {
+      position: absolute; top: 0; bottom: 0; width: 0;
+      border-left: 1.5px dashed #cc2222; z-index: 3;
+    }
+    .val-axis {
+      display: flex; justify-content: space-between;
+      padding: 2px 8px 0 88px; font-size: 7px; color: #666;
+      font-family: "Roboto Slab", serif;
+      font-variant-numeric: tabular-nums;
+    }
+    .val-current-label {
+      font-size: 7px; color: #cc2222; font-weight: 700;
+      font-family: "Roboto Slab", serif; position: absolute;
+      bottom: 0; transform: translateX(-50%); white-space: nowrap;
+    }
+    .val-footer {
+      padding: 3px 8px; font-size: 7px; color: #666;
+      border-top: 1px solid #e0e0e0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .val-assumptions {
+      margin: 4px 8px; padding: 4px;
+      border: 1px solid #e0e0e0; background: #fafafa;
+    }
+    .val-assumptions table { width: 100%; border-collapse: collapse; font-size: 7px; }
+    .val-assumptions th { text-align: left; padding: 2px 4px; font-weight: 600; color: #444; border-bottom: 1px solid #e0e0e0; font-size: 7px; text-transform: uppercase; }
+    .val-assumptions td { padding: 2px 4px; font-family: "Roboto Slab", serif; }
+    .val-method-table {
+      margin: 4px 8px; padding: 4px;
+      border: 1px solid #e0e0e0;
+    }
+    .val-method-table table { width: 100%; border-collapse: collapse; font-size: 7px; }
+    .val-method-table th { text-align: left; padding: 2px 4px; font-weight: 600; color: #444; border-bottom: 1px solid #e0e0e0; font-size: 7px; }
+    .val-method-table td { padding: 2px 4px; }
+    .val-method-table tr.method-primary { background: #f0f8f0; }
+    .val-method-table tr.method-blended { font-weight: 700; border-top: 1.5px solid #555; }
+    .val-method-note {
+      margin: 3px 8px; padding: 4px 6px;
+      font-size: 7.5px; font-style: italic; color: #555;
+      background: #f9f9f9; border-left: 2px solid #4477bb;
+    }
+    .val-methodology {
+      margin: 2px 8px; padding: 3px 6px;
+      font-size: 7px; color: #777;
+    }
+    .rev-mix-name {
+      max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle;
+    }
+    .etf-badge {
+      display: inline-block;
+      background: #0EA5E9;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      padding: 2px 10px;
+      border-radius: 4px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .etf-price-highlight {
+      color: #0EA5E9;
+      font-size: 14px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  {% set hdr = dashboard.company_header %}
+  {% set kpi = dashboard.kpi_ribbon %}
+  {% if "(" in (hdr.name_jp or '') and ")" in (hdr.name_jp or '') %}
+    {% set jp_clean = hdr.name_jp.split("(")[1].rstrip(")") %}
+    {% set romaji_part = hdr.name_jp.split("(")[0].strip() %}
+  {% else %}
+    {% set jp_clean = hdr.name_jp %}
+    {% set romaji_part = None %}
+  {% endif %}
+  {# Safety truncation — prevent raw web-scraped text from breaking the header #}
+  {% set jp_clean = jp_clean[:80] if jp_clean and jp_clean|length > 80 else jp_clean %}
+  {% set en_clean = (hdr.name_en or romaji_part) %}
+  {% set en_clean = en_clean[:100] if en_clean and en_clean|length > 100 else en_clean %}
+  <div class="dashboard">
+    <div class="header">
+      <div class="ticker-box">{{ hdr.ticker }}</div>
+      {% if dashboard.is_etf %}
+      <div class="etf-badge">{{ dashboard.fund_type or 'ETF' }}</div>
+      {% endif %}
+      <div class="company">
+        <div class="jp">{{ jp_clean or '—' }}</div>
+        {% if en_clean %}
+        <div class="en">{{ en_clean }}</div>
+        {% endif %}
+      </div>
+      <div class="meta">
+        <div class="sector">{{ (hdr.sector or '—')[:60] }}</div>
+        <div class="meta-line">{{ (hdr.exchange or 'TSE')[:60] }} · {{ (hdr.accounting_standard or 'Japan GAAP')[:30] }} · {{ (hdr.fiscal_year_end or 'FY End March')[:30] }}</div>
+        {% if hdr.tags %}
+          {% for tag in hdr.tags %}<span class="tag">✓ {{ tag }}</span>{% endfor %}
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="kpi-row">
+      {% if dashboard.is_etf %}
+      {# ── ETF KPI row ── #}
+      <div class="kpi">
+        <div class="kpi-label">Price</div>
+        <div class="kpi-value mono etf-price-highlight">{% if kpi.price is defined and kpi.price is not none %}¥{{ '{:,.0f}'.format(kpi.price) }}{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Net Assets</div>
+        {% if kpi.market_cap_display %}
+          <div class="kpi-value mono">{{ kpi.market_cap_display }}</div>
+        {% else %}
+          <div class="kpi-value mono">—</div>
+        {% endif %}
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">1Y Return</div>
+        <div class="kpi-value mono {{ 'green' if kpi.return_1y is defined and kpi.return_1y is not none and kpi.return_1y >= 0 else 'bear' if kpi.return_1y is defined and kpi.return_1y is not none else '' }}">{% if kpi.return_1y is defined and kpi.return_1y is not none %}{{ '{:+.1f}'.format(kpi.return_1y * 100) }}%{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">6M Return</div>
+        <div class="kpi-value mono {{ 'green' if kpi.return_6m is defined and kpi.return_6m is not none and kpi.return_6m >= 0 else 'bear' if kpi.return_6m is defined and kpi.return_6m is not none else '' }}">{% if kpi.return_6m is defined and kpi.return_6m is not none %}{{ '{:+.1f}'.format(kpi.return_6m * 100) }}%{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">3M Return</div>
+        <div class="kpi-value mono {{ 'green' if kpi.return_3m is defined and kpi.return_3m is not none and kpi.return_3m >= 0 else 'bear' if kpi.return_3m is defined and kpi.return_3m is not none else '' }}">{% if kpi.return_3m is defined and kpi.return_3m is not none %}{{ '{:+.1f}'.format(kpi.return_3m * 100) }}%{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">1M Return</div>
+        <div class="kpi-value mono {{ 'green' if kpi.return_1m is defined and kpi.return_1m is not none and kpi.return_1m >= 0 else 'bear' if kpi.return_1m is defined and kpi.return_1m is not none else '' }}">{% if kpi.return_1m is defined and kpi.return_1m is not none %}{{ '{:+.1f}'.format(kpi.return_1m * 100) }}%{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Avg Vol (90d)</div>
+        <div class="kpi-value mono">{% if kpi.avg_volume is defined and kpi.avg_volume is not none %}{{ '{:,.0f}'.format(kpi.avg_volume) }}{% else %}—{% endif %}</div>
+      </div>
+      {% else %}
+      {# ── Company KPI row ── #}
+      <div class="kpi">
+        <div class="kpi-label">Price</div>
+        <div class="kpi-value mono">{% if kpi.price is defined and kpi.price is not none %}¥{{ '{:,.0f}'.format(kpi.price) }}{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Market Cap</div>
+        {% if kpi.market_cap_display %}
+          <div class="kpi-value mono">{{ kpi.market_cap_display }}</div>
+        {% elif kpi.market_cap is defined and kpi.market_cap is not none %}
+          {% if kpi.market_cap < 1_000_000_000_000 %}
+            <div class="kpi-value mono">¥{{ '{:.1f}'.format(kpi.market_cap/1e9) }}B</div>
+          {% else %}
+            <div class="kpi-value mono">¥{{ '{:.2f}'.format(kpi.market_cap/1e12) }}T</div>
+          {% endif %}
+        {% else %}
+          <div class="kpi-value mono">—</div>
+        {% endif %}
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">P/B Ratio</div>
+        <div class="kpi-value mono">{% if kpi.pbr is defined and kpi.pbr is not none %}{{ '{:.2f}'.format(kpi.pbr) }}x{% elif kpi.pb_value is defined and kpi.pb_value is not none %}{{ '{:.2f}'.format(kpi.pb_value) }}x{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">P/E Ratio</div>
+        <div class="kpi-value mono">{% if kpi.per is defined and kpi.per is not none %}{{ '{:.1f}'.format(kpi.per) }}x{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">ROE (Latest)</div>
+        <div class="kpi-value mono {{ 'green' if kpi.roe is defined and kpi.roe is not none and kpi.roe > 0 else '' }}">{% if kpi.roe is defined and kpi.roe is not none %}{{ '{:.1f}'.format(kpi.roe*100) }}%{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Div Yield</div>
+        <div class="kpi-value mono">{% if kpi.div_yield is defined and kpi.div_yield is not none %}{{ '{:.1f}'.format(kpi.div_yield*100) }}%{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">BPS</div>
+        <div class="kpi-value mono">{% if kpi.bps is defined and kpi.bps is not none %}¥{{ '{:,.0f}'.format(kpi.bps) }}{% else %}—{% endif %}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Equity Ratio</div>
+        <div class="kpi-value mono">{% if kpi.equity_ratio is defined and kpi.equity_ratio is not none %}{{ '{:.0f}'.format(kpi.equity_ratio*100) }}%{% else %}—{% endif %}</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="summary-block">
+      <p style="text-align:justify; margin:4px 0 6px;">{{ dashboard.narrative_outlook.summary_text | default("—", true) }}</p>
+      {% if dashboard.narrative_outlook.company_bullets %}
+      <ul style="margin:0 0 6px 14px; padding:0;">
+        {% for item in dashboard.narrative_outlook.company_bullets %}
+          <li style="margin-bottom:3px;">{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <div class="outlook">
+        <div class="outlook-header">OUTLOOK</div>
+        <p style="text-align:justify; margin:4px 0 6px;">{{ dashboard.narrative_outlook.outlook_summary | default("—", true) }}</p>
+        <div class="bullbear">
+          <div>
+            <h4 class="bull">BULL</h4>
+            <ul>
+              {% for item in dashboard.narrative_outlook.bull_case | default([], true) %}<li style="margin-bottom:3px;">{{ item }}</li>{% endfor %}
+            </ul>
+          </div>
+          <div>
+            <h4 class="bear">BEAR</h4>
+            <ul>
+              {% for item in dashboard.narrative_outlook.bear_case | default([], true) %}<li style="margin-bottom:3px;">{{ item }}</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% if dashboard.is_etf %}
+    <div style="padding: 4px;">
+      <div class="data-header" style="background: #0EA5E9;">MARKET DATA</div>
+      <div class="dense-table" style="padding: 6px;">
+        <div class="mono" style="font-size: 9px; font-weight: 700; margin-bottom: 2px;">52-WEEK RANGE</div>
+        <div class="range-bar">
+          {% set si = dashboard.column_3_market.stock_info|default({}, true) %}
+          {% set week_low = si.week_52_low if si else none %}
+          {% set week_high = si.week_52_high if si else none %}
+          {% set last_price = dashboard.kpi_ribbon.price %}
+          {% if week_high and week_low and week_high != week_low and last_price %}
+            {% set pos = ((last_price - week_low) / (week_high - week_low) * 100) | round | int %}
+            {% set pos = 0 if pos < 0 else (100 if pos > 100 else pos) %}
+          {% else %}
+            {% set pos = 0 %}
+          {% endif %}
+          <div class="range-fill" style="width: {{ pos }}%"></div>
+          <div class="range-dot" style="left: {{ pos }}%"></div>
+        </div>
+        <div style="display:flex; justify-content: space-between; color:#444; font-size: 9px; font-weight: 700; margin-top: -2px;">
+          <span>¥{{ '{:,.0f}'.format(week_low) if week_low else '—' }}</span>
+          <span>¥{{ '{:,.0f}'.format(week_high) if week_high else '—' }}</span>
+        </div>
+        <div style="margin-top:8px; font-size: 10px;">
+          <span style="color: #666;">Avg Vol (90d):</span> <span class="mono" style="font-weight: 700;">{{ '{:,.0f}'.format(si.avg_volume) if si and si.avg_volume is defined and si.avg_volume is not none else '—' }}</span>
+        </div>
+        <div style="font-size: 10px;">
+          <span style="color: #666;">Shares Out:</span> <span class="mono" style="font-weight: 700;">{{ '{:,.0f}'.format(si.shares_out) if si and si.shares_out is defined and si.shares_out is not none else '—' }}</span>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if not dashboard.is_etf %}
+    <div class="charts">
+      <div class="chart">
+        <div class="chart-title">ROE (%) 5yr</div>
+        <div class="bar-wrap">
+          {% for item in dashboard.charts_data.roe | default([], true) %}
+          <div class="bar">
+            <div class="bar-value">{{ '{:.0f}'.format(item.value*100) if item.value is defined and item.value is not none else '—' }}</div>
+            <div class="bar-fill" style="height: {{ item.height }}%"></div>
+            <div class="bar-label">{{ item.label }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="chart">
+        <div class="chart-title">OCF (¥B) 5yr</div>
+        <div class="bar-wrap">
+          {% for item in dashboard.charts_data.ocf | default([], true) %}
+          <div class="bar">
+            <div class="bar-value">{{ '{:.0f}'.format(item.value) if item.value is defined and item.value is not none else '—' }}</div>
+            <div class="bar-fill alt" style="height: {{ item.height }}%"></div>
+            <div class="bar-label">{{ item.label }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="chart">
+        <div class="chart-title">DPS (¥) 5yr</div>
+        <div class="bar-wrap">
+          {% for item in dashboard.charts_data.dps | default([], true) %}
+          <div class="bar">
+            <div class="bar-value">{{ '{:.0f}'.format(item.value) if item.value is defined and item.value is not none else '—' }}</div>
+            <div class="bar-fill" style="height: {{ item.height }}%"></div>
+            <div class="bar-label">{{ item.label }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="chart">
+        <div class="chart-title">Ownership Mix</div>
+        {% set mix = dashboard.charts_data.ownership_mix | default({}, true) %}
+        {% set f = mix.foreign if mix.foreign is not none else 0 %}
+        {% set i = mix.institutional if mix.institutional is not none else 0 %}
+        {% set c = mix.corporate if mix.corporate is not none else 0 %}
+        {% set p = mix.individual if mix.individual is not none else 0 %}
+        {% if f == 0 and i == 0 and c == 0 and p == 0 %}
+        <div style="text-align:center; color:#888; padding:18px 0; font-size:11px;">Ownership data not available</div>
+        {% else %}
+        <div class="stack">
+          <span class="stack-foreign" style="width: {{ f }}%"></span>
+          <span class="stack-inst" style="width: {{ i }}%"></span>
+          <span class="stack-corp" style="width: {{ c }}%"></span>
+          <span class="stack-indiv" style="width: {{ p }}%"></span>
+        </div>
+        <div class="stack-legend">
+          <div class="legend-item"><span class="legend-box stack-foreign"></span> Foreign {% if mix.foreign is not none %}{{ '{:.1f}'.format(f) }}%{% else %}—{% endif %}</div>
+          <div class="legend-item"><span class="legend-box stack-inst"></span> Inst. {% if mix.institutional is not none %}{{ '{:.1f}'.format(i) }}%{% else %}—{% endif %}</div>
+          <div class="legend-item"><span class="legend-box stack-corp"></span> Corp. {% if mix.corporate is not none %}{{ '{:.1f}'.format(c) }}%{% else %}—{% endif %}</div>
+          <div class="legend-item"><span class="legend-box stack-indiv"></span> Indiv. {% if mix.individual is not none %}{{ '{:.1f}'.format(p) }}%{% else %}—{% endif %}</div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="income">
+      <div class="data-header">INCOME STATEMENT (¥MN)</div>
+      <table class="dense-table">
+        <thead>
+          <tr>
+            <th>PERIOD</th>
+            <th>SALES</th>
+            <th>OP. PROFIT</th>
+            <th>ORD. PROFIT</th>
+            <th>NET INCOME</th>
+            <th>EPS (¥)</th>
+            <th>DPS (¥)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in dashboard.income_statement | default([], true) %}
+          <tr>
+            <td>{{ row.period | default("—", true) }}</td>
+            <td class="mono">{{ '{:,.0f}'.format(row.sales) if row.sales is defined and row.sales is not none else '—' }}</td>
+            <td class="mono">{{ '{:,.0f}'.format(row.op_profit) if row.op_profit is defined and row.op_profit is not none else '—' }}</td>
+            <td class="mono">{{ '{:,.0f}'.format(row.ord_profit) if row.ord_profit is defined and row.ord_profit is not none else '—' }}</td>
+            <td class="mono">{{ '{:,.0f}'.format(row.net_income) if row.net_income is defined and row.net_income is not none else '—' }}</td>
+            <td class="mono">{{ '{:,.1f}'.format(row.eps) if row.eps is defined and row.eps is not none else '—' }}</td>
+            <td class="mono">{{ '{:,.1f}'.format(row.dps) if row.dps is defined and row.dps is not none else '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="bottom-grid">
+      <div class="col">
+        <div class="data-header">MAJOR SHAREHOLDERS</div>
+        <div style="padding: 4px 2px;">
+          {% if dashboard.column_1_holdings.major_shareholders %}
+          {% for item in dashboard.column_1_holdings.major_shareholders %}
+          <div class="shareholder-row">
+            <div class="shareholder-name">{{ item.name }}{% if item.type_badge is defined and item.type_badge %}<span class="shareholder-badge" style="background:{{ item.type_badge.color }}">{{ item.type_badge.label }}</span>{% endif %}</div>
+            <div class="shareholder-dots"></div>
+            <div class="shareholder-pct mono">
+              {% if item.pct is defined and item.pct is not none %}{{ '{:.1f}'.format(item.pct) }}%{% else %}—{% endif %}
+              {% if item.change is defined and item.change is not none %}
+              {% if item.change == 'NEW' %}<span class="bull" style="font-size:7px;"> NEW</span>
+              {% elif '↑' in item.change %}<span class="bull" style="font-size:7px;"> ↑</span>
+              {% elif '↓' in item.change %}<span class="bear" style="font-size:7px;"> ↓</span>
+              {% endif %}
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+          {% else %}
+          <div style="text-align:center; color:#888; padding:18px 0; font-size:11px;">Shareholder data not available</div>
+          {% endif %}
+        </div>
+
+        {# ── Activist & Engagement Radar ── #}
+        {% set radar = dashboard.column_1_holdings.activist_radar %}
+        {% if radar and (radar.filings or radar.has_poison_pill) %}
+        <div class="data-header" style="background:#8B0000; margin-top:3px;">ACTIVIST &amp; ENGAGEMENT RADAR</div>
+        <div style="padding: 4px 2px;">
+          {% if radar.has_poison_pill %}
+          <div style="font-size:8px; color:#cc0000; font-weight:700; margin-bottom:3px; padding:2px 4px; background:#fff0f0; border-left:2px solid #cc0000;">&#9888; Takeover defense (poison pill) in place</div>
+          {% endif %}
+          {% if radar.filings %}
+          {% for f in radar.filings[:8] %}
+          <div class="shareholder-row">
+            <div class="shareholder-name">{{ f.filer|e }}{% if f.is_activist %}<span class="shareholder-badge" style="background:#cc0000;">ACT</span>{% endif %}{% if f.is_sold %}<span class="shareholder-badge" style="background:#555;">SOLD</span>{% endif %}</div>
+            <div class="shareholder-dots"></div>
+            <div class="shareholder-pct mono">
+              {% if f.stake_pct is not none %}{{ '{:.1f}'.format(f.stake_pct) }}%{% else %}—{% endif %}
+            </div>
+          </div>
+          {% if f.purpose and f.purpose|length > 3 %}
+          <div style="font-size:7px; color:#999; padding-left:4px; margin-bottom:2px;">{{ f.purpose[:80]|e }} <span style="color:#bbb;">({{ f.date }})</span></div>
+          {% else %}
+          <div style="font-size:7px; color:#bbb; padding-left:4px; margin-bottom:2px;">Filed {{ f.date }}</div>
+          {% endif %}
+          {% endfor %}
+          {% else %}
+          <div style="text-align:center; color:#888; font-size:8px; padding:4px 0;">No large shareholding filings (5% rule) in the past 24 months.</div>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="data-header" style="margin-top:auto;">STAKES HELD BY THIS COMPANY</div>
+        <table class="dense-table">
+          {% for item in dashboard.column_1_holdings.cross_holdings | default([], true) %}
+          <tr>
+            <td>{{ item.name }} ({{ item.ticker }})</td>
+            <td class="mono">{% if item.pct_held is defined and item.pct_held is not none %}{{ '{:.1f}'.format(item.pct_held) }}%{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+      <div class="col">
+        {% set cs = dashboard.capital_structure_section|default({}, true) %}
+        <style>
+          .cap-stack-bar { height: 8px; display: flex; border-radius: 3px; overflow: hidden; margin: 4px 0 2px; }
+          .cap-stack-equity { background: #2E59A7; }
+          .cap-stack-debt { background: #cc4444; }
+          .cap-label-row { display: flex; justify-content: space-between; font-size: 8px; color: #666; margin-bottom: 3px; }
+          .cap-label-eq { color: #2E59A7; font-weight: 600; }
+          .cap-label-dt { color: #cc4444; font-weight: 600; }
+          .cf-waterfall { display: flex; align-items: flex-end; gap: 4px; height: 32px; margin: 4px 0; }
+          .cf-bar-col { display: flex; flex-direction: column; align-items: center; flex: 1; height: 100%; justify-content: flex-end; }
+          .cf-bar-fill { width: 100%; border-radius: 2px 2px 0 0; min-height: 2px; }
+          .cf-bar-label { font-size: 7px; color: #666; margin-top: 1px; font-family: monospace; text-align: center; white-space: nowrap; }
+          .cf-bar-name { font-size: 7px; color: #999; text-align: center; }
+          .net-cash-badge { display: inline-block; background: #e6f7ee; color: #0a7a0a; font-size: 8px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+          .net-debt-badge { display: inline-block; background: #fde8e8; color: #cc4444; font-size: 8px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+          .trend-table { width: 100%; border-collapse: collapse; font-size: 8px; }
+          .trend-table th { font-weight: 600; color: #666; text-align: right; padding: 1px 3px; border-bottom: 1px solid #e0e0e0; }
+          .trend-table th:first-child { text-align: left; }
+          .trend-table td { text-align: right; padding: 1px 3px; font-family: monospace; font-size: 8px; }
+          .trend-table td:first-child { text-align: left; font-family: "Inter", sans-serif; color: #444; }
+          .trend-arrow-up { font-size: 7px; margin-left: 1px; }
+          .trend-arrow-down { font-size: 7px; margin-left: 1px; }
+          .net-cash-cell { color: #0a7a0a; font-weight: 600; }
+          .net-debt-cell { color: #cc4444; font-weight: 600; }
+          .cash-highlight td { background: #f0f7ff; }
+          .cash-highlight td:first-child { color: #2E59A7; font-weight: 600; }
+        </style>
+
+        {# ── 1. Asset Composition ── #}
+        <div class="data-header">ASSETS & CAPITAL STRUCTURE</div>
+        {% if cs.asset_composition %}
+        <table class="dense-table">
+          <tr><td>Total Assets</td><td class="mono">{{ '{:,.0f}'.format(cs.asset_composition.total_assets) if cs.asset_composition.total_assets is not none else '—' }}</td></tr>
+          <tr><td>Cash & Equiv</td><td class="mono">{{ '{:,.0f}'.format(cs.asset_composition.cash_equiv) if cs.asset_composition.cash_equiv is not none else '—' }}</td></tr>
+          <tr><td>Net Assets (Equity)</td><td class="mono">{{ '{:,.0f}'.format(cs.asset_composition.equity) if cs.asset_composition.equity is not none else '—' }}</td></tr>
+          <tr><td>Equity Ratio</td><td class="mono">{{ '{:.1f}%'.format(cs.asset_composition.equity_ratio_pct) if cs.asset_composition.equity_ratio_pct is not none else '—' }}</td></tr>
+        </table>
+        {% else %}
+        <div class="dense-table" style="text-align:center; color:#888; padding:8px 0;">—</div>
+        {% endif %}
+
+        {# ── 2. Equity vs Debt Bar ── #}
+        {% if cs.capital_structure and cs.capital_structure.eq_bar_pct is not none and cs.capital_structure.debt_bar_pct is not none %}
+        <div class="cap-stack-bar">
+          <div class="cap-stack-equity" style="width:{{ cs.capital_structure.eq_bar_pct }}%"></div>
+          <div class="cap-stack-debt" style="width:{{ cs.capital_structure.debt_bar_pct }}%"></div>
+        </div>
+        <div class="cap-label-row">
+          <span class="cap-label-eq">Equity {{ '{:.0f}'.format(cs.capital_structure.eq_bar_pct) }}%</span>
+          <span class="cap-label-dt">Debt {{ '{:.0f}'.format(cs.capital_structure.debt_bar_pct) }}%</span>
+        </div>
+        {% endif %}
+
+        {# ── 3. Leverage ── #}
+        <div class="data-header" style="margin-top:3px;">LEVERAGE</div>
+        {% if cs.capital_structure %}
+        <table class="dense-table">
+          <tr><td>Borrowings</td><td class="mono">{{ '{:,.0f}'.format(cs.capital_structure.borrowings) if cs.capital_structure.borrowings is not none else '—' }}</td></tr>
+          <tr>
+            <td>Net Debt</td>
+            <td class="mono">
+              {% if cs.capital_structure.net_debt is not none %}
+                {% if cs.capital_structure.is_net_cash %}
+                  <span class="net-cash-badge">Net Cash ¥{{ '{:,.0f}'.format(cs.capital_structure.net_debt|abs) }}</span>
+                {% else %}
+                  <span class="net-debt-badge">{{ '{:,.0f}'.format(cs.capital_structure.net_debt) }}</span>
+                {% endif %}
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          <tr><td>D/E Ratio</td><td class="mono">{{ '{:.2f}x'.format(cs.capital_structure.de_ratio) if cs.capital_structure.de_ratio is not none else '—' }}</td></tr>
+          <tr><td>Net Debt / EBITDA</td><td class="mono">{{ '{:.1f}x'.format(cs.capital_structure.net_debt_ebitda) if cs.capital_structure.net_debt_ebitda is not none else '—' }}</td></tr>
+        </table>
+        {% else %}
+        <div class="dense-table" style="text-align:center; color:#888; padding:8px 0;">—</div>
+        {% endif %}
+
+        {# ── 4. Cash Flow Waterfall ── #}
+        <div class="data-header" style="margin-top:3px;">CASH FLOW</div>
+        {% if cs.cash_flow_quality and cs.cash_flow_quality.cf_bars %}
+        <div class="cf-waterfall">
+          {% for key, bar in [('cfo', cs.cash_flow_quality.cf_bars.get('cfo')), ('cfi', cs.cash_flow_quality.cf_bars.get('cfi')), ('cff', cs.cash_flow_quality.cf_bars.get('cff')), ('fcf', cs.cash_flow_quality.cf_bars.get('fcf'))] %}
+          {% if bar %}
+          <div class="cf-bar-col">
+            <div class="cf-bar-fill" style="height:{{ bar.height_pct }}%; background:{{ '#0a7a0a' if key == 'cfo' else '#2E59A7' if key == 'fcf' else '#cc4444' if key == 'cfi' else '#888' }};{{ '' if bar.positive else 'opacity:0.7;' }}"></div>
+            <div class="cf-bar-label">{{ bar.display }}</div>
+            <div class="cf-bar-name">{{ key|upper }}</div>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if cs.cash_flow_quality %}
+        <table class="dense-table">
+          <tr><td>FCF Margin</td><td class="mono">{{ '{:.1f}%'.format(cs.cash_flow_quality.fcf_margin_pct) if cs.cash_flow_quality.fcf_margin_pct is not none else '—' }}</td></tr>
+          <tr><td>FCF Yield</td><td class="mono">{{ '{:.1f}%'.format(cs.cash_flow_quality.fcf_yield_pct) if cs.cash_flow_quality.fcf_yield_pct is not none else '—' }}</td></tr>
+          <tr><td>Cash Conversion</td><td class="mono">{{ '{:.2f}x'.format(cs.cash_flow_quality.cash_conversion) if cs.cash_flow_quality.cash_conversion is not none else '—' }}</td></tr>
+        </table>
+        {% endif %}
+
+        {# ── 5. Per-Share Metrics ── #}
+        <div class="data-header" style="margin-top:3px;">PER-SHARE METRICS</div>
+        {% if cs.per_share %}
+        <table class="dense-table">
+          <tr><td>BPS</td><td class="mono">{{ '¥{:,.1f}'.format(cs.per_share.bps) if cs.per_share.bps is not none else '—' }}</td></tr>
+          <tr><td>EPS</td><td class="mono">{{ '¥{:,.1f}'.format(cs.per_share.eps) if cs.per_share.eps is not none else '—' }}</td></tr>
+          <tr><td>DPS</td><td class="mono">{{ '¥{:,.1f}'.format(cs.per_share.dps) if cs.per_share.dps is not none else '—' }}</td></tr>
+          <tr><td>Payout Ratio</td><td class="mono">{{ '{:.1f}%'.format(cs.per_share.payout_ratio_pct) if cs.per_share.payout_ratio_pct is not none else '—' }}</td></tr>
+          <tr><td>Div Yield</td><td class="mono">{{ '{:.2f}%'.format(cs.per_share.div_yield_pct) if cs.per_share.div_yield_pct is not none else '—' }}</td></tr>
+        </table>
+        {% else %}
+        <div class="dense-table" style="text-align:center; color:#888; padding:8px 0;">—</div>
+        {% endif %}
+
+        {# ── 6. Balance Sheet Trend ── #}
+        {% if cs.trend is defined and cs.trend and cs.trend|length >= 2 %}
+        <div class="data-header" style="margin-top:3px;">BALANCE SHEET TREND</div>
+        <table class="trend-table">
+          <tr>
+            <th></th>
+            {% for t in cs.trend %}<th>{{ t.period_label }}</th>{% endfor %}
+          </tr>
+          <tr>
+            <td>Total Assets</td>
+            {% for t in cs.trend %}<td>{{ t.total_assets_d | default("—", true) }}{% if t.ta_dir == 'up' %}<span class="trend-arrow-up bull">▲</span>{% elif t.ta_dir == 'down' %}<span class="trend-arrow-down bear">▼</span>{% endif %}</td>{% endfor %}
+          </tr>
+          <tr>
+            <td>Equity</td>
+            {% for t in cs.trend %}<td>{{ t.equity_d | default("—", true) }}{% if t.eq_dir == 'up' %}<span class="trend-arrow-up bull">▲</span>{% elif t.eq_dir == 'down' %}<span class="trend-arrow-down bear">▼</span>{% endif %}</td>{% endfor %}
+          </tr>
+          <tr class="cash-highlight">
+            <td>Liquid Cash</td>
+            {% for t in cs.trend %}<td>{{ t.cash_equiv_d | default("—", true) }}{% if t.cash_dir == 'up' %}<span class="trend-arrow-up bull">▲</span>{% elif t.cash_dir == 'down' %}<span class="trend-arrow-down bear">▼</span>{% endif %}</td>{% endfor %}
+          </tr>
+          <tr>
+            <td>Net Debt</td>
+            {% for t in cs.trend %}<td class="{{ 'net-debt-cell' if t.net_debt_positive else 'net-cash-cell' }}">{{ t.net_debt_d | default("—", true) }}{% if t.nd_dir == 'up' %}<span class="trend-arrow-up bear">▲</span>{% elif t.nd_dir == 'down' %}<span class="trend-arrow-down bull">▼</span>{% endif %}</td>{% endfor %}
+          </tr>
+          <tr>
+            <td>Eq. Ratio</td>
+            {% for t in cs.trend %}<td>{{ '{:.1f}%'.format(t.equity_ratio_pct) if t.equity_ratio_pct is not none else '—' }}</td>{% endfor %}
+          </tr>
+          <tr>
+            <td>D/E</td>
+            {% for t in cs.trend %}<td>{{ '{:.2f}x'.format(t.de_ratio) if t.de_ratio is not none else '—' }}</td>{% endfor %}
+          </tr>
+        </table>
+        {% endif %}
+
+        {# ── 7. Revenue Mix (preserved) ── #}
+        <div class="data-header" style="margin-top:4px;">REVENUE MIX</div>
+        <table class="dense-table">
+          {% for item in dashboard.column_2_balance.revenue_mix | default([], true) %}
+          <tr>
+            <td><span class="rev-mix-name" title="{{ item.segment }}">{{ item.segment[:40] }}</span></td>
+            <td class="mono">
+              {% if item.pct is defined and item.pct is not none %}
+                {{ '{:.0f}'.format(item.pct) }}%
+              {% elif item.revenue_mm is defined and item.revenue_mm is not none %}
+                ¥{{ '{:,.0f}'.format(item.revenue_mm) }}M
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+      <div class="col">
+        <div class="data-header">STOCK DATA</div>
+        <div class="dense-table">
+          <div class="mono" style="font-size: 9px; font-weight: 700; margin-bottom: 2px;">52-WEEK RANGE</div>
+          <div class="range-bar">
+            {% set si2 = dashboard.column_3_market.stock_info|default({}, true) %}
+            {% set week_low = si2.week_52_low if si2 else none %}
+            {% set week_high = si2.week_52_high if si2 else none %}
+            {% set last_price = dashboard.kpi_ribbon.price %}
+            {% if week_high and week_low and week_high != week_low and last_price %}
+              {% set pos = ((last_price - week_low) / (week_high - week_low) * 100) | round | int %}
+              {% set pos = 0 if pos < 0 else (100 if pos > 100 else pos) %}
+            {% else %}
+              {% set pos = 0 %}
+            {% endif %}
+            <div class="range-fill" style="width: {{ pos }}%"></div>
+            <div class="range-dot" style="left: {{ pos }}%"></div>
+          </div>
+          <div style="display:flex; justify-content: space-between; color:#444; font-size: 9px; font-weight: 700; margin-top: -2px;">
+            <span>¥{{ '{:,.0f}'.format(week_low) if week_low else '—' }}</span>
+            <span>¥{{ '{:,.0f}'.format(week_high) if week_high else '—' }}</span>
+          </div>
+          <div style="margin-top:8px; font-size: 10px;">
+            <span style="color: #666;">Avg Vol (90d):</span> <span class="mono" style="font-weight: 700;">{{ '{:,.0f}'.format(si2.avg_volume) if si2 and si2.avg_volume is defined and si2.avg_volume is not none else '—' }}</span>
+          </div>
+          <div style="font-size: 10px;">
+            <span style="color: #666;">Shares Out:</span> <span class="mono" style="font-weight: 700;">{{ '{:,.0f}'.format(si2.shares_out) if si2 and si2.shares_out is defined and si2.shares_out is not none else '—' }}</span>
+          </div>
+        </div>
+        {% if dashboard.column_3_market.is_real_peers and dashboard.column_3_market.peer_matrix %}
+        <div class="data-header" style="margin-top:4px; background:#8B4513;">PEER BENCHMARKING</div>
+        <table class="dense-table">
+          <thead>
+            <tr>
+              <th>Company</th><th>Mkt Cap</th><th>EBIT %</th><th>ROE %</th><th>P/B</th><th>P/E</th><th>D/E</th><th>OCF %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {# Subject company row — highlighted #}
+            {% set cs_de = dashboard.capital_structure_section.capital_structure.de_ratio if dashboard.capital_structure_section and dashboard.capital_structure_section.capital_structure and dashboard.capital_structure_section.capital_structure.de_ratio is not none else None %}
+            <tr style="background:#fff8e6; font-weight:600;">
+              <td class="mono" style="color:#8B4513;">{{ hdr.ticker }} – {{ (hdr.name_en or hdr.name_jp or '—')[:18] }}</td>
+              <td class="mono">{% if kpi.market_cap_display %}{{ kpi.market_cap_display }}{% else %}—{% endif %}</td>
+              <td class="mono">{% if kpi.ebit_pct is defined and kpi.ebit_pct is not none %}{{ '{:.1f}'.format(kpi.ebit_pct) }}%{% else %}—{% endif %}</td>
+              <td class="mono">{% if kpi.roe is not none %}{{ '{:.1f}'.format(kpi.roe * 100) }}%{% else %}—{% endif %}</td>
+              <td class="mono">{% if kpi.pbr is not none %}{{ '{:.2f}'.format(kpi.pbr) }}x{% elif kpi.pb_value is not none %}{{ '{:.2f}'.format(kpi.pb_value) }}x{% else %}—{% endif %}</td>
+              <td class="mono">{% if kpi.per is not none %}{{ '{:.1f}'.format(kpi.per) }}x{% else %}—{% endif %}</td>
+              <td class="mono">{% if cs_de is not none %}{{ '{:.2f}'.format(cs_de) }}{% else %}—{% endif %}</td>
+              <td class="mono">{% if kpi.ocf_pct is defined and kpi.ocf_pct is not none %}{{ '{:.0f}'.format(kpi.ocf_pct) }}%{% else %}—{% endif %}</td>
+            </tr>
+            {% for p in dashboard.column_3_market.peer_matrix %}
+            <tr>
+              <td class="mono">{{ p.ticker }} – {{ (p.name or '—')[:18] }}</td>
+              <td class="mono">{% if p.mkt_cap_t is not none %}&#165;{{ '{:.1f}'.format(p.mkt_cap_t) }}T{% else %}—{% endif %}</td>
+              <td class="mono">{% if p.ebit_margin is not none %}{{ '{:.1f}'.format(p.ebit_margin) }}%{% else %}—{% endif %}</td>
+              <td class="mono">{% if p.roe is not none %}{{ '{:.1f}'.format(p.roe) }}%{% else %}—{% endif %}</td>
+              <td class="mono">{% if p.pb is not none %}{{ '{:.2f}'.format(p.pb) }}x{% else %}—{% endif %}</td>
+              <td class="mono">{% if p.pe is not none %}{{ '{:.1f}'.format(p.pe) }}x{% else %}—{% endif %}</td>
+              <td class="mono">{% if p.debt_equity is not none %}{{ '{:.2f}'.format(p.debt_equity) }}{% else %}—{% endif %}</td>
+              <td class="mono">{% if p.ocf_pct is not none %}{{ '{:.0f}'.format(p.ocf_pct) }}%{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if dashboard.column_3_market.peer_medians %}
+        <div class="dense-table" style="margin-top:6px; font-size:9px;">
+          <div><strong>Medians</strong> —
+            {% if dashboard.column_3_market.peer_medians.ebit_pct is defined and dashboard.column_3_market.peer_medians.ebit_pct is not none %}EBIT {{ '{:.1f}'.format(dashboard.column_3_market.peer_medians.ebit_pct) }}%{% endif %}
+            {% if dashboard.column_3_market.peer_medians.roe_pct is defined and dashboard.column_3_market.peer_medians.roe_pct is not none %}, ROE {{ '{:.1f}'.format(dashboard.column_3_market.peer_medians.roe_pct) }}%{% endif %}
+            {% if dashboard.column_3_market.peer_medians.pb is defined and dashboard.column_3_market.peer_medians.pb is not none %}, P/B {{ '{:.2f}'.format(dashboard.column_3_market.peer_medians.pb) }}x{% endif %}
+            {% if dashboard.column_3_market.peer_medians.pe is defined and dashboard.column_3_market.peer_medians.pe is not none %}, P/E {{ '{:.1f}'.format(dashboard.column_3_market.peer_medians.pe) }}x{% endif %}
+            {% if dashboard.column_3_market.peer_medians.de is defined and dashboard.column_3_market.peer_medians.de is not none %}, D/E {{ '{:.2f}'.format(dashboard.column_3_market.peer_medians.de) }}{% endif %}
+          </div>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="data-header" style="margin-top:4px; background:#8B4513;">PEER BENCHMARKING</div>
+        <div style="text-align:center; color:#888; padding:18px 0; font-size:11px;">Peer data not available for this sector</div>
+        {% endif %}
+        <div class="data-header" style="margin-top:auto;">CORPORATE INFO</div>
+        {% if dashboard.column_3_market and dashboard.column_3_market.corporate_info %}
+        {% set ci = dashboard.column_3_market.corporate_info %}
+        <table class="dense-table" style="width:100%; border-collapse:collapse;">
+          <tbody>
+            <tr><td style="color:#666; white-space:nowrap; width:72px; vertical-align:top; padding:3px 6px 3px 4px;">President</td><td style="padding:3px 4px; font-weight:600;">{{ ci.president or '—' }}</td></tr>
+            {% if ci.founded is defined and ci.founded and ci.founded != '—' %}
+            <tr><td style="color:#666; white-space:nowrap; vertical-align:top; padding:3px 6px 3px 4px;">Founded</td><td style="padding:3px 4px;">{{ ci.founded }}</td></tr>
+            {% endif %}
+            <tr><td style="color:#666; white-space:nowrap; vertical-align:top; padding:3px 6px 3px 4px;">Employees</td><td style="padding:3px 4px;">{{ ci.employees or '—' }}</td></tr>
+            <tr><td style="color:#666; white-space:nowrap; vertical-align:top; padding:3px 6px 3px 4px;">Head Office</td><td style="padding:3px 4px;">{{ ci.head_office or '—' }}</td></tr>
+          </tbody>
+        </table>
+        {% else %}
+        <div class="dense-table" style="text-align:center; color:#888; padding:8px 0;">—</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════
+         AI-DRIVEN VALUATION — Football Field Visualization
+         ════════════════════════════════════════════════════════════ -->
+    {% set val = dashboard.valuation %}
+    {% if val and val.method_results %}
+    {# ── Compute shared axis range across all methods + blended ── #}
+    {% set ns = namespace(axis_min=999999999, axis_max=0) %}
+    {% for mr in val.method_results %}
+      {% if mr.price is not none %}
+        {% if mr.range_low is not none and mr.range_low < ns.axis_min %}
+          {% set ns.axis_min = mr.range_low %}
+        {% endif %}
+        {% if mr.range_high is not none and mr.range_high > ns.axis_max %}
+          {% set ns.axis_max = mr.range_high %}
+        {% endif %}
+        {% if mr.price < ns.axis_min %}{% set ns.axis_min = mr.price %}{% endif %}
+        {% if mr.price > ns.axis_max %}{% set ns.axis_max = mr.price %}{% endif %}
+      {% endif %}
+    {% endfor %}
+    {# Include current price and blended range in axis bounds #}
+    {% if val.last_price is not none %}
+      {% if val.last_price < ns.axis_min %}{% set ns.axis_min = val.last_price %}{% endif %}
+      {% if val.last_price > ns.axis_max %}{% set ns.axis_max = val.last_price %}{% endif %}
+    {% endif %}
+    {% if val.target_low is not none and val.target_low < ns.axis_min %}
+      {% set ns.axis_min = val.target_low %}
+    {% endif %}
+    {% if val.target_high is not none and val.target_high > ns.axis_max %}
+      {% set ns.axis_max = val.target_high %}
+    {% endif %}
+    {# 5% padding on each side #}
+    {% set ax_range = ns.axis_max - ns.axis_min if ns.axis_max > ns.axis_min else 1 %}
+    {% set ax_pad = ax_range * 0.05 %}
+    {% set ax_lo = [ns.axis_min - ax_pad, 0] | max %}
+    {% set ax_hi = ns.axis_max + ax_pad %}
+    {% set ax_span = ax_hi - ax_lo %}
+    {% set ax_mid = (ax_lo + ax_hi) / 2 %}
+
+    <div class="val-panel" style="margin: 4px;">
+      <!-- ── Header bar ── -->
+      <div class="val-header">
+        <strong>VALUATION</strong>
+        <span style="margin-left:auto;">TP:
+          <span class="tp-pill {{ 'tp-up' if val.upside_pct is not none and val.upside_pct >= 0 else 'tp-down' }}">
+            ¥{{ '{:,.0f}'.format(val.target_price) if val.target_price is not none else '—' }}
+            ({% if val.upside_pct is not none %}{{ '{:+.1f}'.format(val.upside_pct) }}%{% else %}—{% endif %})
+          </span>
+        </span>
+        <span>Quality
+          <span class="val-quality-bar">
+            <span class="val-quality-fill" style="width:{{ val.quality_score|default(0)|int }}%;
+              background:{{ '#cc2222' if val.quality_score is not none and val.quality_score < 40
+                else '#cc8800' if val.quality_score is not none and val.quality_score < 70
+                else '#0a7a0a' }};"></span>
+          </span>
+          {{ '{:.0f}'.format(val.quality_score) if val.quality_score is not none else '—' }}
+        </span>
+        <span>{{ val.method_count or '—' }} methods</span>
+      </div>
+
+      <!-- ── Football field rows ── -->
+      <div class="val-field" style="padding: 6px 8px 14px 0;">
+        {# Current price vertical line #}
+        {% if val.last_price is not none and ax_span > 0 %}
+        <div class="val-current-line" style="left: calc(88px + (100% - 96px) * {{ ((val.last_price - ax_lo) / ax_span * 100)|round(2) }} / 100);"></div>
+        {% endif %}
+
+        {# Per-method rows #}
+        {% for mr in val.method_results %}
+          {% if mr.price is not none %}
+          {% set abbr = mr.name|replace('Discounted Cash Flow','DCF')|replace('Price/Earnings','P/E')|replace('Price/Book','P/B')|replace('Net Asset Value','NAV')|replace('ML Ensemble','ML')|replace('Dividend Discount','DDM')|replace('Sum-of-Parts','SotP') %}
+          <div class="val-row{{ ' val-row-primary' if mr.key == val.primary_method else '' }}">
+            <div class="val-label">{{ abbr }} {{ '{:.0f}'.format(mr.weight * 100) }}%</div>
+            <div class="val-track">
+              {% if mr.range_low is not none and mr.range_high is not none and ax_span > 0 %}
+              <div class="val-band{{ ' val-band-primary' if mr.key == val.primary_method else '' }}"
+                   style="left: {{ ((mr.range_low - ax_lo) / ax_span * 100)|round(2) }}%;
+                          width: {{ (((mr.range_high - mr.range_low) / ax_span) * 100)|round(2) }}%;"></div>
+              {% endif %}
+              {% if ax_span > 0 %}
+              <div class="val-dot" style="left: {{ ((mr.price - ax_lo) / ax_span * 100)|round(2) }}%;"></div>
+              {% endif %}
+            </div>
+          </div>
+          {% endif %}
+        {% endfor %}
+
+        {# Blended target row #}
+        <div class="val-row" style="margin-top: 3px; min-height: 15px; border-top: 1px solid #ddd; padding-top: 2px;">
+          <div class="val-label" style="font-weight:700; font-size:7.5px;">BLENDED</div>
+          <div class="val-track" style="height: 11px;">
+            {% if val.target_low is not none and val.target_high is not none and ax_span > 0 %}
+            <div class="val-band val-band-blended"
+                 style="left: {{ ((val.target_low - ax_lo) / ax_span * 100)|round(2) }}%;
+                        width: {{ (((val.target_high - val.target_low) / ax_span) * 100)|round(2) }}%;"></div>
+            {% endif %}
+            {% if val.target_price is not none and ax_span > 0 %}
+            <div class="val-dot val-dot-blended" style="left: {{ ((val.target_price - ax_lo) / ax_span * 100)|round(2) }}%;"></div>
+            {% endif %}
+          </div>
+        </div>
+
+        {# Current price label beneath the red line #}
+        {% if val.last_price is not none and ax_span > 0 %}
+        <div class="val-current-label"
+             style="left: calc(88px + (100% - 96px) * {{ ((val.last_price - ax_lo) / ax_span * 100)|round(2) }} / 100);">
+          Current ¥{{ '{:,.0f}'.format(val.last_price) }}
+        </div>
+        {% endif %}
+      </div>
+
+      <!-- ── Axis labels ── -->
+      <div class="val-axis">
+        <span>¥{{ '{:,.0f}'.format(ax_lo) }}</span>
+        <span>¥{{ '{:,.0f}'.format(ax_mid) }}</span>
+        <span>¥{{ '{:,.0f}'.format(ax_hi) }}</span>
+      </div>
+
+      <!-- ── KEY ASSUMPTIONS ── -->
+      {% set dcf_details = namespace(found=false, d={}) %}
+      {% for mr in val.method_results %}
+        {% if mr.key == 'dcf' and mr.details %}
+          {% set dcf_details.found = true %}
+          {% set dcf_details.d = mr.details %}
+        {% endif %}
+      {% endfor %}
+      {% if dcf_details.found or (val.advisor and val.advisor.wacc_estimate) %}
+      <div class="val-assumptions">
+        <table>
+          <tr>
+            <th>WACC</th><th>Terminal Growth</th><th>Rev Growth (S1)</th><th>Rev Growth (S2)</th><th>FCF Margin</th><th>Cost of Equity (CAPM)</th><th>Projection Years</th>
+          </tr>
+          <tr>
+            <td>{% if val.advisor and val.advisor.wacc_estimate %}{{ '{:.1f}'.format(val.advisor.wacc_estimate * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if val.advisor and val.advisor.terminal_growth %}{{ '{:.1f}'.format(val.advisor.terminal_growth * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if dcf_details.d and dcf_details.d.growth_stage1 is defined and dcf_details.d.growth_stage1 is not none %}{{ '{:.1f}'.format(dcf_details.d.growth_stage1 * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if dcf_details.d and dcf_details.d.growth_stage2 is defined and dcf_details.d.growth_stage2 is not none %}{{ '{:.1f}'.format(dcf_details.d.growth_stage2 * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if dcf_details.d and dcf_details.d.fcf_margin is defined and dcf_details.d.fcf_margin is not none %}{{ '{:.1f}'.format(dcf_details.d.fcf_margin * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if ext is defined and ext.cost_of_equity is defined and ext.cost_of_equity is not none %}{{ '{:.1f}'.format(ext.cost_of_equity * 100) }}%{% else %}—{% endif %}</td>
+            <td>{{ dcf_details.d.projection_years if dcf_details.d and dcf_details.d.projection_years is defined and dcf_details.d.projection_years is not none else '7' }}</td>
+          </tr>
+        </table>
+      </div>
+      {% endif %}
+
+      <!-- ── EXTENDED METRICS TABLE ── -->
+      {% set ext = val.extended_metrics if val.extended_metrics is defined else {} %}
+      {% if ext and (ext.beta is defined or ext.roic is defined or ext.earnings_yield is defined) %}
+      <div class="val-assumptions" style="margin-top:3px;">
+        <table>
+          <tr>
+            <th>Beta</th><th>ROIC</th><th>Earnings Yield</th><th>FCF Yield</th><th>Debt/Equity</th><th>EV/Revenue</th><th>Implied Growth</th><th>Cost of Equity</th>
+          </tr>
+          <tr>
+            <td>{{ '{:.2f}'.format(ext.beta) if ext.beta is defined and ext.beta is not none else '—' }}</td>
+            <td>{% if ext.roic is defined and ext.roic is not none %}{{ '{:.1f}'.format(ext.roic * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if ext.earnings_yield is defined and ext.earnings_yield is not none %}{{ '{:.1f}'.format(ext.earnings_yield * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if ext.fcf_yield is defined and ext.fcf_yield is not none %}{{ '{:.1f}'.format(ext.fcf_yield * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if ext.debt_equity is defined and ext.debt_equity is not none %}{{ '{:.2f}'.format(ext.debt_equity) }}x{% else %}—{% endif %}</td>
+            <td>{% if ext.ev_revenue is defined and ext.ev_revenue is not none %}{{ '{:.2f}'.format(ext.ev_revenue) }}x{% else %}—{% endif %}</td>
+            <td>{% if ext.implied_growth is defined and ext.implied_growth is not none %}{{ '{:.1f}'.format(ext.implied_growth * 100) }}%{% else %}—{% endif %}</td>
+            <td>{% if ext.cost_of_equity is defined and ext.cost_of_equity is not none %}{{ '{:.1f}'.format(ext.cost_of_equity * 100) }}%{% else %}—{% endif %}</td>
+          </tr>
+        </table>
+      </div>
+      {% endif %}
+
+      <!-- ── METHOD SUMMARY TABLE ── -->
+      {% set active_methods = [] %}
+      {% set contributing_methods = [] %}
+      {% for mr in val.method_results %}
+        {% if mr.price is not none and mr.weight is defined and mr.weight > 0 %}
+          {% set _ = active_methods.append(mr) %}
+          {% if mr.price > 0 %}
+            {% set _ = contributing_methods.append(mr) %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {% if active_methods %}
+      <div class="val-method-table">
+        <table>
+          <thead>
+            <tr><th>Method</th><th>Weight</th><th>Price (¥)</th><th>Range (¥)</th><th>Key Driver</th></tr>
+          </thead>
+          <tbody>
+            {% for mr in active_methods %}
+            <tr class="{{ 'method-primary' if mr.key == val.primary_method else '' }}">
+              <td>{{ mr.name }}</td>
+              <td>{{ '{:.0f}'.format(mr.weight * 100) }}%</td>
+              <td style="font-family:'Roboto Slab',serif;">{{ '{:,.0f}'.format(mr.price) }}</td>
+              <td style="font-family:'Roboto Slab',serif;">{% if mr.range_low is not none and mr.range_high is not none %}{{ '{:,.0f}'.format(mr.range_low) }}–{{ '{:,.0f}'.format(mr.range_high) }}{% else %}—{% endif %}</td>
+              <td style="font-size:6.5px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ mr.reasoning[:120] if mr.reasoning else '—' }}</td>
+            </tr>
+            {% endfor %}
+            {% if val.target_price is not none %}
+            <tr class="method-blended">
+              <td>BLENDED</td>
+              <td>100%</td>
+              <td style="font-family:'Roboto Slab',serif;">{{ '{:,.0f}'.format(val.target_price) }}</td>
+              <td style="font-family:'Roboto Slab',serif;">{% if val.target_low is not none and val.target_high is not none %}{{ '{:,.0f}'.format(val.target_low) }}–{{ '{:,.0f}'.format(val.target_high) }}{% else %}—{% endif %}</td>
+              <td>Weighted average of {{ contributing_methods|length }} methods</td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+
+      <!-- ── Advisor reasoning note ── -->
+      {% if val.advisor and val.advisor.reasoning %}
+      <div class="val-method-note">
+        {{ val.advisor.reasoning }}
+      </div>
+      {% endif %}
+
+      <!-- ── Methodology footer ── -->
+      <div class="val-methodology">
+        Methodology: An AI advisor examines the company's financials, sector, and narrative context to assign per-method relevance weights (0–100%) across up to 14 models.
+        Methods with weight 0 are excluded. Active method prices are computed independently, then blended by weight.
+        Ranges reflect bull/bear scenario analysis for DCF, P25–P75 peer percentiles for multiples, and ±sensitivity for other models.
+        Quality score ({{ '{:.0f}'.format(val.quality_score) if val.quality_score is not none else '—' }}/100) considers method count, agreement, data recency, peer sample depth, historical coverage, and data completeness.
+      </div>
+    </div>
+    {% else %}
+    <div style="padding: 4px;">
+      <div class="data-header">VALUATION — unavailable</div>
+      <div style="padding:4px; font-size:8px; color:#888;">
+        Valuation model could not run. Ensure J-Quants API credentials are configured and ML_ENABLED=true.
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ════════════════════════════════════════════════════════════
+         CAPITAL ALLOCATION / PIPELINE / ESG / RISK — real data
+         ════════════════════════════════════════════════════════════ -->
+    <div style="padding: 0 4px;">
+      {# ── CAPITAL ALLOCATION ── #}
+      <div class="data-header" style="margin-top:6px;">CAPITAL ALLOCATION</div>
+      {% if dashboard.capital_allocation %}
+      <table class="dense-table">
+        <tr>
+          <th>Metric</th>
+          {% for p in dashboard.capital_allocation %}<th>{{ p.period_label }}</th>{% endfor %}
+        </tr>
+        <tr>
+          <td>FCF (¥M)</td>
+          {% for p in dashboard.capital_allocation %}<td class="mono">{% if p.fcf is not none %}{{ '{:,.0f}'.format(p.fcf / 1000000) }}{% else %}—{% endif %}</td>{% endfor %}
+        </tr>
+        <tr>
+          <td>Capex (¥M)</td>
+          {% for p in dashboard.capital_allocation %}<td class="mono">{% if p.capex is not none %}{{ '{:,.0f}'.format(p.capex / 1000000) }}{% else %}—{% endif %}</td>{% endfor %}
+        </tr>
+        <tr>
+          <td>Shareholder Returns (¥M)</td>
+          {% for p in dashboard.capital_allocation %}<td class="mono">{% if p.shareholder_returns is not none %}{{ '{:,.0f}'.format(p.shareholder_returns / 1000000) }}{% else %}—{% endif %}</td>{% endfor %}
+        </tr>
+        <tr>
+          <td>Net Debt / EBITDA (x)</td>
+          {% for p in dashboard.capital_allocation %}<td class="mono">{% if p.net_debt_ebitda is not none %}{{ '{:.1f}'.format(p.net_debt_ebitda) }}{% else %}—{% endif %}</td>{% endfor %}
+        </tr>
+        <tr>
+          <td>Payout Ratio</td>
+          {% for p in dashboard.capital_allocation %}<td class="mono">{% if p.payout_ratio is not none %}{{ '{:.0f}'.format(p.payout_ratio) }}%{% else %}—{% endif %}</td>{% endfor %}
+        </tr>
+      </table>
+      {% else %}
+      <div style="padding:4px; font-size:8px; color:#888;">No capital allocation data available.</div>
+      {% endif %}
+
+      {# ── PIPELINE & PROJECTS ── #}
+      <div class="data-header" style="margin-top:6px;">PIPELINE &amp; PROJECTS</div>
+      {% if dashboard.capital_projects %}
+      <table class="dense-table">
+        <tr><th>Project</th><th>Type</th><th>Timeline</th><th>Amount (¥M)</th><th>Description</th></tr>
+        {% for proj in dashboard.capital_projects %}
+        <tr>
+          <td>{{ proj.project_name or '—' }}</td>
+          <td>{{ proj.type or '—' }}</td>
+          <td>{{ proj.timeline or '—' }}</td>
+          <td class="mono">{% if proj.amount_mm is not none %}{{ '{:,.0f}'.format(proj.amount_mm) }}{% else %}—{% endif %}</td>
+          <td>{{ proj.description or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <div style="padding:4px; font-size:8px; color:#888;">No project disclosures found in EDINET filings.</div>
+      {% endif %}
+
+      {# ── ESG / CLIMATE ── #}
+      <div class="data-header" style="margin-top:6px;">ESG / CLIMATE</div>
+      {% set has_esg = (dashboard.esg_data.get('environmental', []) | length > 0) or (dashboard.esg_data.get('social', []) | length > 0) or (dashboard.esg_data.get('governance', []) | length > 0) or (dashboard.esg_data.get('certifications', []) | length > 0) %}
+      {% if has_esg %}
+      <ul style="margin:2px 0 2px 14px; padding:0; font-size:8px;">
+        {% for cert in dashboard.esg_data.get('certifications', []) %}
+        <li style="color:#555;"><strong>{{ cert }}</strong></li>
+        {% endfor %}
+        {% for item in dashboard.esg_data.get('environmental', []) %}
+        <li style="color:#2e7d32;">{{ item }}</li>
+        {% endfor %}
+        {% for item in dashboard.esg_data.get('social', []) %}
+        <li style="color:#1565c0;">{{ item }}</li>
+        {% endfor %}
+        {% for item in dashboard.esg_data.get('governance', []) %}
+        <li style="color:#6d4c41;">{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div style="padding:4px; font-size:8px; color:#888;">No ESG disclosures found in EDINET filings.</div>
+      {% endif %}
+
+      {# ── RISK DASHBOARD ── #}
+      <div class="data-header" style="margin-top:6px;">RISK DASHBOARD</div>
+      {% if dashboard.risk_dashboard %}
+      <ul style="margin:2px 0 2px 14px; padding:0; font-size:8px;">
+        {% for risk in dashboard.risk_dashboard %}
+        <li>
+          {% if risk.assessment == 'elevated' %}<span style="color:#c62828; font-weight:bold;">[HIGH]</span>
+          {% elif risk.assessment == 'moderate' %}<span style="color:#e65100; font-weight:bold;">[MED]</span>
+          {% else %}<span style="color:#2e7d32; font-weight:bold;">[LOW]</span>
+          {% endif %}
+          <strong>{{ risk.metric | default("—", true) }}</strong>{% if risk.value and risk.value != '—' %} ({{ risk.value }}){% endif %}: {{ risk.detail | default("—", true) }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div style="padding:4px; font-size:8px; color:#888;">No risk data available.</div>
+      {% endif %}
+    </div>
+    {% endif %}{# end if not dashboard.is_etf #}
+
+    <div class="footer">
+      <strong>KEY DISCLOSURES (12 mo):</strong>
+      {% for item in dashboard.footer_disclosures | default([], true) %}
+        <div>{{ item.date | default("—", true) }} — {{ item.title | default("—", true) }} {{ item.detail | default("", true) }}</div>
+      {% endfor %}
+      <div class="meta-line">
+        <span>Generated: {{ dashboard.report_metadata.generated_at | default("—", true) }}</span>
+        <span>Source: {{ dashboard.report_metadata.source | default("—", true) }}</span>
+        <span>{{ dashboard.report_metadata.analyst_firm | default("—", true) }}</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

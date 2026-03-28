@@ -1,0 +1,10 @@
+cache/
+tmp/
+output/
+*.pdf
+*.xls
+__pycache__/
+.DS_Store
+.env
+node_modules/
+.venv/
