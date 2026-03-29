@@ -133,7 +133,7 @@ function getQuickActions(tools) {
   return pool.filter(a => !used.has(a.key)).slice(0, 4);
 }
 
-/* ── Tool Pill — Ultra-premium Apple HIG ──────────────────── */
+/* ── Tool Pill — Apple HIG Minimal ─────────────────────────── */
 
 /* Tool-specific expected durations (seconds) for fallback progress */
 const TOOL_SPEED = {
@@ -181,7 +181,6 @@ function useSmoothNumber(target) {
       if (Math.abs(diff) < 0.5 && Math.abs(velocityRef.current) < 0.1) {
         currentRef.current = target; velocityRef.current = 0; setDisplay(target); return;
       }
-      // Spring physics: stiffness=0.08, damping=0.82
       velocityRef.current = velocityRef.current * 0.82 + diff * 0.08;
       currentRef.current += velocityRef.current;
       setDisplay(Math.round(currentRef.current));
@@ -193,477 +192,256 @@ function useSmoothNumber(target) {
   return display;
 }
 
-/* Orbiting particle canvas for loading state */
-function OrbitalRing({ hex, pct, size = 36 }) {
-  const canvasRef = useRef(null);
-  const rafRef = useRef(null);
-  const startRef = useRef(Date.now());
+/* Helper: parse hex to rgba */
+const hexRgba = (hex, alpha) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+};
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    ctx.scale(dpr, dpr);
-
-    const cx = size / 2, cy = size / 2, r = size / 2 - 3;
-    const NUM_PARTICLES = 8;
-    const TAIL_LEN = 0.35; // radians of tail per particle
-
-    // Parse hex to rgb
-    const hexToRgb = (h) => {
-      const n = parseInt(h.slice(1), 16);
-      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-    };
-    const [pr, pg, pb] = hexToRgb(hex);
-
-    const draw = () => {
-      const t = (Date.now() - startRef.current) / 1000;
-      ctx.clearRect(0, 0, size, size);
-
-      // Track circle
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, 0.12)`;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      // Progress arc (bold, glowing)
-      const progressAngle = (pct / 100) * Math.PI * 2;
-      if (progressAngle > 0.01) {
-        // Outer glow for progress arc
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + progressAngle);
-        ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, 0.15)`;
-        ctx.lineWidth = 5;
-        ctx.lineCap = "round";
-        ctx.stroke();
-        // Main arc
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + progressAngle);
-        ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, 0.6)`;
-        ctx.lineWidth = 2.5;
-        ctx.lineCap = "round";
-        ctx.stroke();
-      }
-
-      // Orbiting particles — always visible, brighter
-      for (let i = 0; i < NUM_PARTICLES; i++) {
-        const baseAngle = (i / NUM_PARTICLES) * Math.PI * 2;
-        const speed = 1.2 + (i % 3) * 0.4;
-        const angle = baseAngle + t * speed;
-        const wobble = Math.sin(t * 2.5 + i * 1.7) * 2;
-        const pr2 = r + wobble;
-        const x = cx + Math.cos(angle) * pr2;
-        const y = cy + Math.sin(angle) * pr2;
-
-        const particleSize = 1.4 + Math.sin(t * 3 + i) * 0.5;
-        const alpha = 0.55 + Math.sin(t * 2 + i * 0.9) * 0.3;
-
-        // Glow halo
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, particleSize * 4);
-        grad.addColorStop(0, `rgba(${pr}, ${pg}, ${pb}, ${alpha * 0.5})`);
-        grad.addColorStop(1, `rgba(${pr}, ${pg}, ${pb}, 0)`);
-        ctx.fillStyle = grad;
-        ctx.fillRect(x - particleSize * 4, y - particleSize * 4, particleSize * 8, particleSize * 8);
-
-        // Core dot
-        ctx.beginPath();
-        ctx.arc(x, y, particleSize, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${pr}, ${pg}, ${pb}, ${alpha * 0.85})`;
-        ctx.fill();
-      }
-
-      // Leading dot at progress tip — bright beacon
-      const leadAngle = -Math.PI / 2 + progressAngle;
-      const lx = cx + Math.cos(leadAngle) * r;
-      const ly = cy + Math.sin(leadAngle) * r;
-      const pulse = 0.7 + Math.sin(t * 5) * 0.3;
-      const leadGlow = ctx.createRadialGradient(lx, ly, 0, lx, ly, 6);
-      leadGlow.addColorStop(0, `rgba(${pr}, ${pg}, ${pb}, ${pulse})`);
-      leadGlow.addColorStop(0.4, `rgba(${pr}, ${pg}, ${pb}, 0.25)`);
-      leadGlow.addColorStop(1, `rgba(${pr}, ${pg}, ${pb}, 0)`);
-      ctx.fillStyle = leadGlow;
-      ctx.fillRect(lx - 6, ly - 6, 12, 12);
-      ctx.beginPath();
-      ctx.arc(lx, ly, 2, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${pr}, ${pg}, ${pb}, 0.95)`;
-      ctx.fill();
-
-      rafRef.current = requestAnimationFrame(draw);
-    };
-
-    rafRef.current = requestAnimationFrame(draw);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [hex, pct, size]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: size, height: size, position: "absolute", inset: 0 }}
-    />
-  );
-}
-
-/* Completion burst particles */
-function CompletionBurst({ hex, size = 36 }) {
-  const canvasRef = useRef(null);
-  const rafRef = useRef(null);
-  const startRef = useRef(Date.now());
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    const s = size * 2; // double size for burst overflow
-    canvas.width = s * dpr;
-    canvas.height = s * dpr;
-    ctx.scale(dpr, dpr);
-
-    const cx = s / 2, cy = s / 2;
-    const hexToRgb = (h) => {
-      const n = parseInt(h.slice(1), 16);
-      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-    };
-    const [pr, pg, pb] = hexToRgb(hex);
-
-    // Generate burst particles
-    const particles = Array.from({ length: 12 }, (_, i) => ({
-      angle: (i / 12) * Math.PI * 2 + (Math.random() - 0.5) * 0.3,
-      speed: 18 + Math.random() * 25,
-      size: 0.8 + Math.random() * 1.2,
-      decay: 0.85 + Math.random() * 0.1,
-    }));
-
-    const draw = () => {
-      const elapsed = (Date.now() - startRef.current) / 1000;
-      if (elapsed > 0.8) return; // stop after animation
-
-      ctx.clearRect(0, 0, s, s);
-
-      const progress = elapsed / 0.8; // 0 → 1
-      const ease = 1 - Math.pow(1 - progress, 3); // ease-out cubic
-
-      for (const p of particles) {
-        const dist = p.speed * ease;
-        const x = cx + Math.cos(p.angle) * dist;
-        const y = cy + Math.sin(p.angle) * dist;
-        const alpha = Math.max(0, 1 - progress * 1.5) * 0.7;
-        const currentSize = p.size * (1 - progress * 0.5);
-
-        // Glow
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, currentSize * 4);
-        grad.addColorStop(0, `rgba(52, 199, 89, ${alpha * 0.4})`);
-        grad.addColorStop(1, `rgba(52, 199, 89, 0)`);
-        ctx.fillStyle = grad;
-        ctx.fillRect(x - currentSize * 4, y - currentSize * 4, currentSize * 8, currentSize * 8);
-
-        // Core
-        ctx.beginPath();
-        ctx.arc(x, y, currentSize, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(52, 199, 89, ${alpha})`;
-        ctx.fill();
-      }
-
-      // Center flash
-      if (progress < 0.3) {
-        const flashAlpha = (1 - progress / 0.3) * 0.3;
-        const flashGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 16);
-        flashGrad.addColorStop(0, `rgba(52, 199, 89, ${flashAlpha})`);
-        flashGrad.addColorStop(1, `rgba(52, 199, 89, 0)`);
-        ctx.fillStyle = flashGrad;
-        ctx.fillRect(cx - 16, cy - 16, 32, 32);
-      }
-
-      rafRef.current = requestAnimationFrame(draw);
-    };
-
-    rafRef.current = requestAnimationFrame(draw);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [hex, size]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        width: size * 2, height: size * 2,
-        position: "absolute",
-        top: -(size / 2), left: -(size / 2),
-        pointerEvents: "none",
-      }}
-    />
-  );
-}
+let _toolPillCounter = 0;
 
 function ToolPill({ tool, input, result, isLoading, sources, serverPct, serverStage }) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState("idle"); // idle | loading | completing | done
-  const meta = TOOL_META[tool] || { icon: Wrench, label: tool, color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", hex: "#9ca3af" };
+  const [uid] = useState(() => `tp-${++_toolPillCounter}`);
+  const meta = TOOL_META[tool] || { icon: Wrench, label: tool, color: "text-gray-500", bg: "bg-gray-100", hex: "#9ca3af" };
   const Icon = meta.icon;
   const action = describeToolAction(tool, input);
   const detail = formatToolDetail(tool, input);
   const canExpand = !isLoading && phase !== "completing";
   const estimatedPct = useToolProgress(isLoading, tool);
-  // Always use the higher of server-reported or estimated — estimated provides smooth animation floor
   const rawPct = Math.max(estimatedPct, serverPct || 0);
   const pct = useSmoothNumber(rawPct);
   const stage = serverStage || "";
-  const [prevStage, setPrevStage] = useState("");
 
-  // Track stage transitions for animation
-  useEffect(() => {
-    if (stage && stage !== prevStage && stage !== "starting" && stage !== "cached") {
-      setPrevStage(stage);
-    }
-  }, [stage, prevStage]);
+  // SVG ring constants (r=11, circumference)
+  const R = 11, CIRC = 2 * Math.PI * R;
+  const dashOffset = CIRC - (pct / 100) * CIRC;
 
   useEffect(() => {
     if (isLoading) { setPhase("loading"); return; }
     if (phase === "loading") {
       setPhase("completing");
-      const t = setTimeout(() => setPhase("done"), 1000);
+      const t = setTimeout(() => setPhase("done"), 900);
       return () => clearTimeout(t);
     }
   }, [isLoading, phase]);
 
-  // Parse hex to rgba helper
-  const hexAlpha = (alpha) => {
-    const n = parseInt(meta.hex.slice(1), 16);
-    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-  };
+  const hex = meta.hex;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12, scale: 0.88 }}
+      initial={{ opacity: 0, y: 6, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ type: "spring", stiffness: 400, damping: 28, mass: 0.8 }}
+      transition={{ type: "spring", stiffness: 500, damping: 30 }}
       layout
+      className="tool-pill-root"
     >
       <div
-        className="relative rounded-[16px] overflow-hidden"
+        className="relative overflow-hidden"
         style={{
-          transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)",
+          borderRadius: 12,
+          transition: "all 0.5s cubic-bezier(0.16, 1, 0.3, 1)",
           background: phase === "completing"
-            ? "rgba(240, 253, 244, 0.7)"
+            ? "rgba(240, 253, 244, 0.65)"
             : isLoading
-            ? "rgba(255, 255, 255, 0.75)"
+            ? "rgba(255,255,255,0.6)"
             : open
-            ? "rgba(255, 255, 255, 0.55)"
-            : "rgba(255, 255, 255, 0.35)",
-          backdropFilter: "blur(24px) saturate(1.8)",
-          WebkitBackdropFilter: "blur(24px) saturate(1.8)",
+            ? "rgba(255,255,255,0.45)"
+            : "rgba(255,255,255,0.28)",
+          backdropFilter: "blur(20px) saturate(1.6)",
+          WebkitBackdropFilter: "blur(20px) saturate(1.6)",
           boxShadow: phase === "completing"
-            ? `0 0 0 1px rgba(52, 199, 89, 0.25), 0 4px 24px -4px rgba(52, 199, 89, 0.12), 0 0 40px -8px rgba(52, 199, 89, 0.08)`
+            ? `0 0 0 1px rgba(52,199,89,0.2), 0 2px 12px -3px rgba(52,199,89,0.1)`
             : isLoading
-            ? `0 0 0 1px ${hexAlpha(0.12)}, 0 4px 20px -4px ${hexAlpha(0.08)}, 0 0 32px -8px ${hexAlpha(0.05)}`
-            : open
-            ? "0 0 0 1px rgba(0,0,0,0.06), 0 2px 8px -2px rgba(0,0,0,0.04)"
-            : "0 0 0 1px rgba(0,0,0,0.04)",
+            ? `0 0 0 1px ${hexRgba(hex, 0.1)}, 0 2px 10px -3px ${hexRgba(hex, 0.06)}`
+            : `0 0 0 1px rgba(0,0,0,${open ? 0.06 : 0.04})`,
         }}
       >
-        {/* Ambient glow pulse during loading */}
-        {isLoading && (
-          <div
-            className="absolute inset-0 pointer-events-none tool-glow-pulse"
-            style={{
-              background: `radial-gradient(ellipse 80% 60% at 20% 50%, ${hexAlpha(0.06)}, transparent 70%)`,
-            }}
-          />
-        )}
-
-        {/* Shimmer sweep during loading — refined glass effect */}
-        {isLoading && (
-          <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-[16px]">
-            <div className="tool-shimmer absolute inset-y-0 -left-full w-full"
-              style={{ background: `linear-gradient(90deg, transparent 0%, ${hexAlpha(0.07)} 35%, rgba(255,255,255,0.35) 50%, ${hexAlpha(0.07)} 65%, transparent 100%)` }}
-            />
-          </div>
-        )}
-
-        {/* Progress track — refined bottom bar with glow */}
+        {/* Animated bottom progress line */}
         {(isLoading || phase === "completing") && (
-          <div className="absolute bottom-0 left-0 right-0 h-[2px]" style={{ background: "rgba(0,0,0,0.02)" }}>
+          <div className="absolute bottom-0 left-0 right-0 h-[1.5px]" style={{ background: "rgba(0,0,0,0.02)" }}>
             <motion.div
-              className="h-full rounded-full"
+              className="h-full"
               style={{
+                borderRadius: 1,
                 background: phase === "completing"
-                  ? "linear-gradient(90deg, rgba(52, 199, 89, 0.5), rgba(52, 199, 89, 0.8))"
-                  : `linear-gradient(90deg, ${hexAlpha(0.2)}, ${hexAlpha(0.5)})`,
+                  ? "rgba(52, 199, 89, 0.55)"
+                  : hexRgba(hex, 0.4),
                 boxShadow: phase === "completing"
-                  ? "0 0 8px rgba(52, 199, 89, 0.4)"
-                  : `0 0 6px ${hexAlpha(0.2)}`,
+                  ? "0 0 6px rgba(52,199,89,0.3)"
+                  : `0 0 4px ${hexRgba(hex, 0.15)}`,
               }}
               initial={false}
               animate={{ width: `${pct}%` }}
-              transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+              transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
             />
           </div>
         )}
 
-        <motion.button
-          layout="position"
+        <button
           onClick={() => canExpand && setOpen(!open)}
-          className={`relative w-full flex items-center gap-3 px-3.5 py-2.5 text-left ${
-            canExpand ? "cursor-pointer" : "cursor-default"
-          }`}
-          style={{ transition: "padding 0.3s ease" }}
+          className={canExpand ? "cursor-pointer" : "cursor-default"}
+          style={{
+            position: "relative", width: "100%", display: "flex", alignItems: "center",
+            gap: 10, padding: "8px 12px", textAlign: "left", border: "none", background: "none",
+            outline: "none", WebkitTapHighlightColor: "transparent",
+          }}
         >
-          {/* Icon container — orbital particles during loading */}
-          <div className="relative shrink-0 flex items-center justify-center" style={{ width: 36, height: 36 }}>
+          {/* Icon circle with SVG progress ring */}
+          <div style={{ position: "relative", width: 28, height: 28, flexShrink: 0 }}>
             {isLoading ? (
               <>
-                <OrbitalRing hex={meta.hex} pct={pct} size={36} />
-                <motion.div
-                  animate={{ scale: [1, 1.08, 1] }}
-                  transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                >
-                  <Icon className="relative z-10" style={{ width: 14, height: 14, color: meta.hex, opacity: 0.7 }} />
-                </motion.div>
+                {/* SVG progress ring */}
+                <svg width="28" height="28" viewBox="0 0 28 28" style={{ position: "absolute", inset: 0 }}>
+                  {/* Track */}
+                  <circle cx="14" cy="14" r={R} fill="none"
+                    stroke={hexRgba(hex, 0.08)} strokeWidth="2" />
+                  {/* Progress arc */}
+                  <circle cx="14" cy="14" r={R} fill="none"
+                    strokeWidth="2" strokeLinecap="round"
+                    style={{
+                      stroke: hexRgba(hex, 0.55),
+                      strokeDasharray: CIRC,
+                      strokeDashoffset: dashOffset,
+                      transition: "stroke-dashoffset 0.5s cubic-bezier(0.16, 1, 0.3, 1)",
+                      transform: "rotate(-90deg)",
+                      transformOrigin: "center",
+                      filter: `drop-shadow(0 0 3px ${hexRgba(hex, 0.25)})`,
+                    }}
+                  />
+                </svg>
+                {/* Rotating shimmer overlay on the ring */}
+                <svg width="28" height="28" viewBox="0 0 28 28"
+                  className="tool-ring-spin"
+                  style={{ position: "absolute", inset: 0 }}>
+                  <defs>
+                    <linearGradient id={uid} x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stopColor={hexRgba(hex, 0)} />
+                      <stop offset="50%" stopColor={hexRgba(hex, 0.3)} />
+                      <stop offset="100%" stopColor={hexRgba(hex, 0)} />
+                    </linearGradient>
+                  </defs>
+                  <circle cx="14" cy="14" r={R} fill="none"
+                    stroke={`url(#${uid})`}
+                    strokeWidth="2" strokeLinecap="round"
+                    strokeDasharray={`${CIRC * 0.25} ${CIRC * 0.75}`}
+                  />
+                </svg>
+                {/* Icon */}
+                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Icon style={{ width: 12, height: 12, color: hexRgba(hex, 0.6) }} />
+                </div>
               </>
             ) : phase === "completing" ? (
-              <>
-                <CompletionBurst hex={meta.hex} size={36} />
-                <motion.div
-                  initial={{ scale: 0, rotate: -180 }}
-                  animate={{ scale: 1, rotate: 0 }}
-                  transition={{ type: "spring", stiffness: 400, damping: 20, mass: 0.6 }}
-                  className="relative z-10 flex items-center justify-center"
-                  style={{
-                    width: 36, height: 36, borderRadius: "50%",
-                    background: "rgba(52, 199, 89, 0.1)",
-                    boxShadow: "0 0 16px rgba(52, 199, 89, 0.15)",
-                  }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34c759" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <motion.path
-                      d="M4 12 L9 17 L20 6"
-                      initial={{ pathLength: 0, opacity: 0 }}
-                      animate={{ pathLength: 1, opacity: 1 }}
-                      transition={{ duration: 0.4, delay: 0.15, ease: [0.16, 1, 0.3, 1] }}
-                    />
-                  </svg>
-                </motion.div>
-              </>
-            ) : (
               <motion.div
-                className="flex items-center justify-center"
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: "spring", stiffness: 500, damping: 22 }}
                 style={{
-                  width: 36, height: 36, borderRadius: "50%",
-                  background: `${meta.hex}10`,
-                  transition: "all 0.4s ease",
+                  width: 28, height: 28, borderRadius: "50%",
+                  background: "rgba(52, 199, 89, 0.08)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
                 }}
-                whileHover={{ scale: 1.05, background: `${meta.hex}18` }}
               >
-                <Icon style={{ width: 14, height: 14, color: meta.hex, opacity: 0.65 }} />
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                  stroke="#34c759" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <motion.path d="M4 12 L9 17 L20 6"
+                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+                    transition={{ duration: 0.35, delay: 0.1, ease: [0.16, 1, 0.3, 1] }} />
+                </svg>
               </motion.div>
+            ) : (
+              <div style={{
+                width: 28, height: 28, borderRadius: "50%",
+                background: hexRgba(hex, 0.07),
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "background 0.3s ease",
+              }}>
+                <Icon style={{ width: 12, height: 12, color: hexRgba(hex, 0.55) }} />
+              </div>
             )}
           </div>
 
-          {/* Text content */}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <AnimatePresence mode="wait">
-                <motion.span
-                  key={isLoading ? (stage || "loading") : phase === "completing" ? "complete" : "done"}
-                  initial={{ opacity: 0, y: 6, filter: "blur(4px)" }}
-                  animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                  exit={{ opacity: 0, y: -6, filter: "blur(4px)" }}
-                  transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                  className="text-[12.5px] font-medium tracking-[-0.01em] truncate flex-1 min-w-0"
-                  style={{
-                    color: phase === "completing" ? "rgba(52, 199, 89, 0.8)"
-                      : isLoading ? "rgba(0,0,0,0.65)"
-                      : "rgba(0,0,0,0.42)",
-                  }}
-                >
-                  {isLoading
-                    ? (stage && stage !== "starting" && stage !== "cached" ? stage : meta.label)
-                    : phase === "completing"
-                    ? "Complete"
-                    : (typeof result === "string" ? result : meta.label)}
-                </motion.span>
-              </AnimatePresence>
+          {/* Label + percentage */}
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{
+                fontSize: 12.5, fontWeight: 500, letterSpacing: "-0.01em",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                flex: 1, minWidth: 0, transition: "color 0.4s ease",
+                color: phase === "completing" ? "rgba(52,199,89,0.75)"
+                  : isLoading ? "rgba(0,0,0,0.6)"
+                  : "rgba(0,0,0,0.4)",
+              }}>
+                {isLoading
+                  ? (stage && stage !== "starting" && stage !== "cached" ? stage : meta.label)
+                  : phase === "completing"
+                  ? "Done"
+                  : (typeof result === "string" ? result : meta.label)}
+              </span>
               {isLoading && (
-                <motion.span
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="text-[10px] font-mono tabular-nums shrink-0 tool-pct-counter"
-                  style={{ color: hexAlpha(0.5) }}
-                >
-                  {pct}<span style={{ opacity: 0.5, fontSize: 8 }}>%</span>
-                </motion.span>
+                <span style={{
+                  fontSize: 10, fontFamily: "'SF Mono', 'Menlo', monospace",
+                  fontFeatureSettings: '"tnum" 1', flexShrink: 0,
+                  color: hexRgba(hex, 0.45),
+                }}>
+                  {pct}%
+                </span>
               )}
             </div>
-            {/* Micro action description visible during loading */}
+            {/* Action description — only while loading */}
             {isLoading && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                transition={{ duration: 0.3, delay: 0.1 }}
-              >
-                <span className="text-[10px] tracking-wide" style={{ color: "rgba(0,0,0,0.22)" }}>
-                  {action}
-                </span>
-              </motion.div>
+              <div style={{
+                fontSize: 10, letterSpacing: "0.01em", marginTop: 1,
+                color: "rgba(0,0,0,0.2)", overflow: "hidden",
+                textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>
+                {action}
+              </div>
             )}
           </div>
 
+          {/* Expand chevron */}
           {canExpand && phase === "done" && (
-            <motion.div
-              animate={{ rotate: open ? 180 : 0 }}
-              transition={{ type: "spring", stiffness: 300, damping: 25 }}
-            >
-              <ChevronDown style={{ width: 14, height: 14, color: "rgba(0,0,0,0.15)" }} />
-            </motion.div>
+            <ChevronDown style={{
+              width: 12, height: 12, color: "rgba(0,0,0,0.13)", flexShrink: 0,
+              transform: open ? "rotate(180deg)" : "rotate(0deg)",
+              transition: "transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
+            }} />
           )}
-        </motion.button>
+        </button>
 
-        {/* Expanded details panel */}
+        {/* Expanded details */}
         <AnimatePresence initial={false}>
           {open && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: "auto", opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.3, ease: [0.25, 1, 0.5, 1] }}
-              className="overflow-hidden"
+              transition={{ duration: 0.25, ease: [0.25, 1, 0.5, 1] }}
+              style={{ overflow: "hidden" }}
             >
-              <div className="px-3.5 pb-3 pt-0.5">
-                <div className="ml-12 border-l pl-3 space-y-1.5" style={{ borderColor: "rgba(0,0,0,0.05)" }}>
-                  <div className="flex items-center gap-1.5">
-                    <span style={{ width: 5, height: 5, borderRadius: "50%", background: hexAlpha(0.4) }} />
-                    <span className="text-[10px] font-mono tracking-wide" style={{ color: "rgba(0,0,0,0.25)" }}>{detail.endpoint}</span>
+              <div style={{ padding: "0 12px 10px", marginLeft: 38 }}>
+                <div style={{ borderLeft: "1px solid rgba(0,0,0,0.05)", paddingLeft: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                    <span style={{ width: 4, height: 4, borderRadius: "50%", background: hexRgba(hex, 0.35) }} />
+                    <span style={{ fontSize: 9.5, fontFamily: "monospace", color: "rgba(0,0,0,0.22)", letterSpacing: "0.03em" }}>{detail.endpoint}</span>
                   </div>
                   {detail.params.map(([k, v], i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, x: -8 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: i * 0.05, duration: 0.2 }}
-                      className="flex items-baseline gap-2 text-[10px]"
-                    >
-                      <span className="uppercase tracking-wider text-[9px] min-w-[36px]" style={{ color: "rgba(0,0,0,0.18)" }}>{k}</span>
-                      <span className="font-mono truncate" style={{ color: "rgba(0,0,0,0.38)" }}>{v}</span>
-                    </motion.div>
+                    <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 10, marginBottom: 2 }}>
+                      <span style={{ color: "rgba(0,0,0,0.16)", textTransform: "uppercase", fontSize: 9, letterSpacing: "0.05em", minWidth: 32 }}>{k}</span>
+                      <span style={{ color: "rgba(0,0,0,0.35)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v}</span>
+                    </div>
                   ))}
                   {sources && sources.length > 0 && (
-                    <div className="flex items-center gap-1.5 pt-1">
-                      {sources.map((s, si) => (
-                        <motion.span
-                          key={s}
-                          initial={{ opacity: 0, scale: 0.8 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          transition={{ delay: si * 0.05 }}
-                          className="text-[9px] px-2 py-0.5 rounded-full font-medium"
-                          style={{
-                            background: "rgba(0,0,0,0.03)",
-                            color: "rgba(0,0,0,0.28)",
-                            boxShadow: "0 0 0 1px rgba(0,0,0,0.04)",
-                          }}
-                        >{s}</motion.span>
+                    <div style={{ display: "flex", gap: 4, marginTop: 5 }}>
+                      {sources.map(s => (
+                        <span key={s} style={{
+                          fontSize: 9, padding: "2px 7px", borderRadius: 99,
+                          background: "rgba(0,0,0,0.025)", color: "rgba(0,0,0,0.25)",
+                          boxShadow: "0 0 0 1px rgba(0,0,0,0.035)",
+                        }}>{s}</span>
                       ))}
                     </div>
                   )}
@@ -1305,7 +1083,7 @@ export default function Query() {
       <>
         {/* Tool pills */}
         {msgTools.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-5">
+          <div className="grid gap-1.5 mb-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>
             {msgTools.map((tc, i) => (
               <ToolPill key={tc.id || `${tc.tool}-${i}`} tool={tc.tool} input={tc.input} result={tc.result}
                 isLoading={streaming ? tc.isLoading : false} sources={tc.sources}
@@ -1544,11 +1322,8 @@ export default function Query() {
         .query-scroll::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.12); }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
         .streaming-cursor { animation: blink 0.8s ease-in-out infinite; }
-        @keyframes shimmer { 0% { transform: translateX(0); } 100% { transform: translateX(200%); } }
-        .tool-shimmer { animation: shimmer 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
-        @keyframes glowPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-        .tool-glow-pulse { animation: glowPulse 3s ease-in-out infinite; }
-        .tool-pct-counter { font-feature-settings: "tnum" 1; }
+        @keyframes toolRingSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .tool-ring-spin { animation: toolRingSpin 2.5s linear infinite; }
       `}</style>
     </div>
   );

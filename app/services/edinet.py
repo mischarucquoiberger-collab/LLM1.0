@@ -14,6 +14,19 @@ from pathlib import Path
 from app.config import settings
 from app.services.cache import load_cache, save_cache
 
+_shared_http_client: httpx.Client | None = None
+
+def _get_http_client() -> httpx.Client:
+    """Module-level pooled HTTP client — reuses TCP connections across all EDINET requests."""
+    global _shared_http_client
+    if _shared_http_client is None:
+        _shared_http_client = httpx.Client(
+            timeout=30,
+            limits=httpx.Limits(max_connections=15, max_keepalive_connections=8),
+            follow_redirects=True,
+        )
+    return _shared_http_client
+
 try:  # optional, improves iXBRL parsing
     from lxml import etree  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -133,7 +146,7 @@ class EdinetClient:
         doc_type_value = doc_type if doc_type is not None else settings.edinet_doc_type
         params = {"date": date_str, "type": doc_type_value, **self._auth_params()}
 
-        response = httpx.get(url, params=params, timeout=30)
+        response = _get_http_client().get(url, params=params)
         response.raise_for_status()
         payload = response.json()
         results = payload.get("results", [])
@@ -361,7 +374,7 @@ class EdinetClient:
             return b""
         url = f"{self.base_url}/documents/{doc_id}"
         params = {"type": 1, **self._auth_params()}
-        response = httpx.get(url, params=params, timeout=60)
+        response = _get_http_client().get(url, params=params, timeout=60)
         response.raise_for_status()
         return response.content
 

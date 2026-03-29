@@ -692,13 +692,27 @@ def _tool_lookup_company(inp: dict) -> str:
     return json.dumps({"error": "Company not found", "stock_code": code})
 
 
+_yahoo_http_client: "httpx.Client | None" = None
+
+def _get_yahoo_client():
+    global _yahoo_http_client
+    if _yahoo_http_client is None:
+        import httpx
+        _yahoo_http_client = httpx.Client(
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0"},
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            follow_redirects=True,
+        )
+    return _yahoo_http_client
+
+
 def _fetch_yahoo_quote(stock_code: str) -> dict | None:
     """Fetch live intraday quote from Yahoo Finance (free, no auth)."""
-    import httpx
     symbol = f"{stock_code.strip()}.T"
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
     try:
-        resp = httpx.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        resp = _get_yahoo_client().get(url)
         resp.raise_for_status()
         data = resp.json()
         result = data.get("chart", {}).get("result", [])
@@ -726,8 +740,9 @@ def _fetch_yahoo_quote(stock_code: str) -> dict | None:
 
 def _tool_get_prices(inp: dict) -> str:
     import datetime as dt
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from app.services.jquants import JQuantsClient
-    report_progress(15, "fetching live price")
+    report_progress(10, "fetching prices")
     client = JQuantsClient()
     stock_code = inp["stock_code"]
 
@@ -735,24 +750,34 @@ def _tool_get_prices(inp: dict) -> str:
     sources_used = []
     _yahoo_used = False
 
-    # 1. Try Yahoo Finance for LIVE intraday price (free, fast, real-time)
-    live_quote = _fetch_yahoo_quote(stock_code)
+    # Fetch Yahoo live quote and J-Quants historical IN PARALLEL
+    live_quote = None
+    quotes = []
+
+    def _fetch_yahoo():
+        return _fetch_yahoo_quote(stock_code)
+
+    def _fetch_jquants():
+        try:
+            data = client.get_prices(stock_code)
+            return data.get("daily_quotes") or data.get("data") or []
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        yahoo_fut = pool.submit(_fetch_yahoo)
+        jquants_fut = pool.submit(_fetch_jquants)
+        live_quote = yahoo_fut.result()
+        quotes = jquants_fut.result()
+
     if live_quote:
         _yahoo_used = True
-    report_progress(40, "fetching historical data")
-
-    # 2. Get historical data — try J-Quants first, fall back to Stooq
-    quotes = []
-    try:
-        data = client.get_prices(stock_code)
-        quotes = data.get("daily_quotes") or data.get("data") or []
-        if quotes:
-            sources_used.append("J-Quants")
-    except Exception:
-        pass
+    if quotes:
+        sources_used.append("J-Quants")
+    report_progress(60, "processing data")
 
     if not quotes:
-        report_progress(60, "trying fallback source")
+        report_progress(70, "trying fallback source")
         try:
             data = client.get_prices_fallback_csv(stock_code)
             quotes = data.get("daily_quotes") or []
@@ -2556,9 +2581,9 @@ def _tool_analyze_risk(inp: dict) -> str:
     beta = None
     beta_interp = "Not computed"
     try:
-        nk_resp = httpx.get(
+        nk_resp = _get_yahoo_client().get(
             "https://query1.finance.yahoo.com/v8/finance/chart/%5EN225?interval=1d&range=1y",
-            timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+            timeout=10,
         )
         nk_resp.raise_for_status()
         nk_data = nk_resp.json()
@@ -2670,9 +2695,17 @@ def _tool_analyze_risk(inp: dict) -> str:
 
 def _tool_score_company(inp: dict) -> str:
     """Piotroski F-Score + Value/Growth/Quality/Activist scores + Fair Value."""
+    from concurrent.futures import ThreadPoolExecutor
     stock_code = inp["stock_code"].strip()
-    report_progress(10, "fetching financials")
-    fin_str = _dispatch_tool("get_financials", {"stock_code": stock_code})
+    report_progress(10, "fetching data")
+
+    # Fetch financials + prices in parallel
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fin_fut = pool.submit(_dispatch_tool, "get_financials", {"stock_code": stock_code})
+        price_fut = pool.submit(_dispatch_tool, "get_stock_prices", {"stock_code": stock_code, "days": 30})
+        fin_str = fin_fut.result()
+        price_str = price_fut.result()
+
     fin_data = json.loads(fin_str)
     if "error" in fin_data:
         return json.dumps({"error": f"Cannot score: {fin_data['error']}"})
@@ -2680,10 +2713,8 @@ def _tool_score_company(inp: dict) -> str:
     if len(stmts) < 2:
         return json.dumps({"error": "Need 2+ financial periods for scoring"})
 
-    report_progress(40, "fetching prices")
-    price_str = _dispatch_tool("get_stock_prices", {"stock_code": stock_code, "days": 30})
+    report_progress(50, "computing scores")
     price_data = json.loads(price_str)
-    report_progress(60, "computing scores")
     latest, prior = stmts[-1], stmts[-2]
 
     def pv(e, k):
@@ -2925,9 +2956,9 @@ def _tool_get_market_context(inp: dict) -> str:
 
     def _yf(symbol, key, label):
         try:
-            r = httpx.get(
+            r = _get_yahoo_client().get(
                 f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d",
-                timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+                timeout=8)
             if r.status_code != 200: return
             res = r.json().get("chart", {}).get("result", [])
             if not res: return
@@ -2955,7 +2986,7 @@ def _tool_get_market_context(inp: dict) -> str:
     # Frankfurter.app backup for forex
     if "usd_jpy" not in ctx:
         try:
-            r = httpx.get("https://api.frankfurter.app/latest?from=USD&to=JPY", timeout=8)
+            r = _get_yahoo_client().get("https://api.frankfurter.app/latest?from=USD&to=JPY", timeout=8)
             if r.status_code == 200:
                 rate = r.json().get("rates", {}).get("JPY")
                 if rate: ctx["usd_jpy"] = {"value": rate, "change_pct": None}
@@ -3094,9 +3125,16 @@ def _tool_screen_sector(inp: dict) -> str:
         codes_names = [(p.get("code"), p.get("name", "")) for p in peers[:15]]
 
     def _fetch_one(code_name):
+        from concurrent.futures import ThreadPoolExecutor
         code, name = code_name
         try:
-            fin = json.loads(_dispatch_tool("get_financials", {"stock_code": code}))
+            # Fetch financials + prices in parallel per company
+            with ThreadPoolExecutor(max_workers=2) as inner_pool:
+                fin_fut = inner_pool.submit(_dispatch_tool, "get_financials", {"stock_code": code})
+                price_fut = inner_pool.submit(_dispatch_tool, "get_stock_prices", {"stock_code": code, "days": 5})
+                fin = json.loads(fin_fut.result())
+                price = json.loads(price_fut.result())
+
             if "error" in fin:
                 return None
             stmts = fin.get("statements", [])
@@ -3104,7 +3142,6 @@ def _tool_screen_sector(inp: dict) -> str:
                 return None
             latest = stmts[-1]
 
-            price = json.loads(_dispatch_tool("get_stock_prices", {"stock_code": code, "days": 5}))
             cur_price = None
             if "error" not in price:
                 s = price.get("summary", {})
@@ -3187,7 +3224,7 @@ def _tool_screen_sector(inp: dict) -> str:
     results = []
     _screened = 0
     _total_screen = len(codes_names)
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(_fetch_one, cn): cn for cn in codes_names}
         for fut in as_completed(futs):
             try:

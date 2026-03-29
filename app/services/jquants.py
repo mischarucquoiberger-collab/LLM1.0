@@ -15,6 +15,20 @@ class JQuantsCompany:
     market: str | None = None
 
 
+_shared_http_client: httpx.Client | None = None
+
+def _get_http_client() -> httpx.Client:
+    """Module-level pooled HTTP client — reuses TCP connections across all requests."""
+    global _shared_http_client
+    if _shared_http_client is None:
+        _shared_http_client = httpx.Client(
+            timeout=30,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            follow_redirects=True,
+        )
+    return _shared_http_client
+
+
 class JQuantsClient:
     def __init__(self) -> None:
         self.api_key = settings.jquants_api_key
@@ -51,7 +65,7 @@ class JQuantsClient:
         if not token_source:
             return ""
         url = f"{self.base_url}/v1/token/auth_refresh"
-        response = httpx.post(url, json={"refreshToken": token_source}, timeout=30)
+        response = _get_http_client().post(url, json={"refreshToken": token_source})
         response.raise_for_status()
         return response.json().get("idToken", "")
 
@@ -67,7 +81,7 @@ class JQuantsClient:
 
         def do_request(base_url: str, headers: Dict) -> httpx.Response:
             url = f"{base_url}{endpoint}"
-            return httpx.get(url, params=params, headers=headers, timeout=30)
+            return _get_http_client().get(url, params=params, headers=headers)
 
         headers_primary = self._headers()
 
@@ -219,7 +233,7 @@ class JQuantsClient:
         symbol = f"{stock_code.strip().upper().replace('.T','')}.jp"
         url = f"https://stooq.pl/q/d/l/?s={symbol}&i=d"
         try:
-            resp = httpx.get(url, timeout=12)
+            resp = _get_http_client().get(url, timeout=12)
             resp.raise_for_status()
             lines = resp.text.strip().splitlines()
             if len(lines) <= 1:

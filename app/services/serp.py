@@ -7,6 +7,18 @@ import httpx
 from app.config import settings
 from app.services.concurrent import run_concurrent
 
+_shared_http_client: httpx.Client | None = None
+
+def _get_http_client() -> httpx.Client:
+    global _shared_http_client
+    if _shared_http_client is None:
+        _shared_http_client = httpx.Client(
+            timeout=30,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            follow_redirects=True,
+        )
+    return _shared_http_client
+
 
 @dataclass
 class SerpResult:
@@ -38,9 +50,9 @@ class SerpClient:
                 "X-API-KEY": self.api_key,
                 "Content-Type": "application/json",
             }
-            response = httpx.post(self.base_url, json=json_body or params, headers=headers, timeout=30)
+            response = _get_http_client().post(self.base_url, json=json_body or params, headers=headers)
         else:
-            response = httpx.get(self.base_url, params=params, timeout=30)
+            response = _get_http_client().get(self.base_url, params=params)
         response.raise_for_status()
         return response.json()
 

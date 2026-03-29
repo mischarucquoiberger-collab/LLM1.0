@@ -19,6 +19,19 @@ from pathlib import Path
 
 import httpx
 
+_shared_http_client: httpx.Client | None = None
+
+def _get_http_client() -> httpx.Client:
+    global _shared_http_client
+    if _shared_http_client is None:
+        _shared_http_client = httpx.Client(
+            timeout=15,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+        )
+    return _shared_http_client
+
 from app.config import settings
 from app.services.serp import SerpClient
 from app.services.concurrent import run_concurrent
@@ -137,8 +150,7 @@ def _phase1_company_research(serp: SerpClient, ticker: str, company_name: str) -
 def _fetch_page(url: str) -> str | None:
     """Fetch a URL and extract text content, or return None on failure."""
     try:
-        resp = httpx.get(url, timeout=15, follow_redirects=True, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        resp = _get_http_client().get(url, headers={
             "Accept": "text/html,application/xhtml+xml",
         })
         if resp.status_code != 200:
