@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
+from contextvars import ContextVar
 from typing import AsyncGenerator
 
 import anthropic
@@ -25,6 +27,17 @@ def _get_anthropic_client() -> anthropic.AsyncAnthropic:
     if _async_anthropic_client is None:
         _async_anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     return _async_anthropic_client
+
+# ── Tool progress reporting ───────────────────────────────
+# Thread-local progress callback — tools call report_progress(pct, stage)
+# and the SSE loop picks it up via an asyncio.Queue.
+_progress_callback: ContextVar[object] = ContextVar("_progress_callback", default=None)
+
+def report_progress(pct: int, stage: str = ""):
+    """Call from any tool to report progress (0-100). Thread-safe."""
+    cb = _progress_callback.get(None)
+    if cb:
+        cb(pct, stage)
 
 # ── Known activists & shareholder classification ──────────
 _KNOWN_ACTIVISTS = {
@@ -202,6 +215,7 @@ TECHNICAL ANALYSIS:
 STOCK CODE FORMAT:
 - TSE stock codes can be numeric (e.g. 7203, 6758, 4849) or alphanumeric (e.g. 157A, 247A, 285A, 362A). The new JPX alphanumeric format (3 digits + letter) is valid — NEVER reject these as invalid or call them coins/crypto. Always pass them to tools as-is.
 - When a user types any code matching [0-9]{3,4}[A-Z]? pattern, treat it as a TSE stock code and look it up.
+- KEY COMPANY NAMES → CODES: Toyota=7203, Sony=6758, Keyence=6861, SoftBank Group=9984, Nintendo=7974, Tokyo Electron=8035, FANUC=6954, Hitachi=6501, Honda=7267, Panasonic=6752, Recruit=6098, Daikin=6367, Shin-Etsu=4063, Takeda=4502, Fast Retailing=9983, MUFG=8306, SMFG=8316, Mizuho=8411, Canon=7751, Nidec=6594, Advantest=6857, SMC=6273, Komatsu=6301, DENSO=6902, En Japan=4849, Kioxia=285A. Use these when a user mentions a company by name — do NOT guess stock codes.
 
 THEMATIC SCREENING:
 - For "AI stocks", "AI companies", "robotics", "semiconductor", "defense" requests: use screen_sector with sector="ai" (or "robotics", "semiconductor", "defense"). These are cross-sector thematic lists.
@@ -241,13 +255,13 @@ FORENSIC ACCOUNTING & EARNINGS QUALITY:
 TOOL_DEFINITIONS = [
     {
         "name": "lookup_company",
-        "description": "Look up basic company information by TSE stock code. Returns company name, sector, and market segment. Very fast.",
+        "description": "Look up basic company information by TSE stock code OR company name. Returns company name, sector, and market segment. Very fast. Accepts either a stock code (e.g. '7203') or an English company name (e.g. 'Keyence', 'Toyota').",
         "input_schema": {
             "type": "object",
             "properties": {
                 "stock_code": {
                     "type": "string",
-                    "description": "TSE stock code — numeric (e.g. '7203') or alphanumeric (e.g. '157A', '247A')"
+                    "description": "TSE stock code (e.g. '7203', '157A') OR English company name (e.g. 'Keyence', 'Toyota', 'Sony')"
                 }
             },
             "required": ["stock_code"]
@@ -501,11 +515,16 @@ MAX_TOOL_ITERATIONS = 8
 
 # ── Tool dispatch ──────────────────────────────────────────
 
-def _dispatch_tool(name: str, tool_input: dict) -> str:
+def _dispatch_tool(name: str, tool_input: dict, progress_fn=None) -> str:
     """Execute a tool and return JSON string result. Uses cache to avoid 429s."""
+    # Install progress callback for this thread
+    if progress_fn:
+        _progress_callback.set(progress_fn)
     cache_key = f"{name}:{json.dumps(tool_input, sort_keys=True)}"
     cached = _cache_get(cache_key)
     if cached is not None:
+        if progress_fn:
+            progress_fn(100, "cached")
         return cached
 
     try:
@@ -637,11 +656,19 @@ _COMMON_COMPANIES = {
 }
 
 def _tool_lookup_company(inp: dict) -> str:
-    code = inp["stock_code"].strip().upper().replace(".T", "")
-    # Fast path: local dictionary (instant, no API call)
+    raw = inp["stock_code"].strip()
+    code = raw.upper().replace(".T", "")
+    # Fast path: local dictionary by code (instant, no API call)
     if code in _COMMON_COMPANIES:
         name, sector = _COMMON_COMPANIES[code]
         return json.dumps({"name": name, "sector": sector, "market": "Prime", "_sources": ["JPX"], "_source_details": {"JPX": {"type": "api", "desc": f"JPX Listed Companies Database — {code}"}}})
+    # Name-based reverse lookup: if input doesn't look like a stock code, try matching company name
+    import re
+    if not re.match(r'^\d{3,4}[A-Z]?$', code):
+        query = raw.lower()
+        for c, (n, s) in _COMMON_COMPANIES.items():
+            if query in n.lower() or n.lower().startswith(query):
+                return json.dumps({"stock_code": c, "name": n, "sector": s, "market": "Prime", "_sources": ["JPX"], "_source_details": {"JPX": {"type": "api", "desc": f"JPX Listed Companies Database — {c}"}}})
     # Try local sector map + peer DB (covers alphanumeric codes like 157A)
     from app.services.sector_lookup import get_sector_detail
     from app.services.peer_db import PeerDatabase
@@ -700,6 +727,7 @@ def _fetch_yahoo_quote(stock_code: str) -> dict | None:
 def _tool_get_prices(inp: dict) -> str:
     import datetime as dt
     from app.services.jquants import JQuantsClient
+    report_progress(15, "fetching live price")
     client = JQuantsClient()
     stock_code = inp["stock_code"]
 
@@ -711,6 +739,7 @@ def _tool_get_prices(inp: dict) -> str:
     live_quote = _fetch_yahoo_quote(stock_code)
     if live_quote:
         _yahoo_used = True
+    report_progress(40, "fetching historical data")
 
     # 2. Get historical data — try J-Quants first, fall back to Stooq
     quotes = []
@@ -723,6 +752,7 @@ def _tool_get_prices(inp: dict) -> str:
         pass
 
     if not quotes:
+        report_progress(60, "trying fallback source")
         try:
             data = client.get_prices_fallback_csv(stock_code)
             quotes = data.get("daily_quotes") or []
@@ -731,6 +761,7 @@ def _tool_get_prices(inp: dict) -> str:
         except Exception:
             pass
 
+    report_progress(80, "processing data")
     if not quotes and not live_quote:
         return json.dumps({"error": "No price data available."})
 
@@ -948,11 +979,13 @@ def _pick_num(item: dict, keys: list):
 
 def _tool_get_financials(inp: dict) -> str:
     from app.services.jquants import JQuantsClient
+    report_progress(20, "querying J-Quants")
     client = JQuantsClient()
     try:
         data = client.get_financials(inp["stock_code"])
     except Exception:
         return json.dumps({"error": "Financial data service temporarily rate-limited. Try again shortly."})
+    report_progress(70, "processing statements")
     statements = data.get("statements") or data.get("financials") or data.get("data") or []
 
     if not statements:
@@ -1259,6 +1292,7 @@ def _tool_search_edinet(inp: dict) -> str:
 
 def _tool_web_search(inp: dict) -> str:
     from app.services.serp import SerpClient
+    report_progress(20, "searching web")
     client = SerpClient()
     num = min(inp.get("num_results", 5), 10)
     news = inp.get("news_only", False)
@@ -1266,6 +1300,7 @@ def _tool_web_search(inp: dict) -> str:
         results = client.search(inp["query"], num=num, news=news)
     except Exception:
         return json.dumps({"error": "Web search temporarily unavailable"})
+    report_progress(80, "processing results")
 
     if not results:
         return json.dumps({"error": "No search results found"})
@@ -1551,108 +1586,160 @@ def _translate_purpose_fast(purpose: str | None) -> str | None:
     return purpose
 
 
+## ── Shared EDINET 大量保有 index ──────────────────────────────────────────────
+#
+# Architecture:
+#   1. On server startup, a background thread pre-builds the index (~4s)
+#   2. Index maps issuerEdinetCode → filings and secCode → edinetCode
+#   3. All subsequent queries are instant O(1) dict lookups
+#   4. Auto-refreshes every hour in background (never blocks a query)
+#   5. Uses httpx.Client with connection pooling (reuses TCP connections)
+
+_060_index_lock = threading.Lock()
+_060_index: dict | None = None          # issuer_edinet_code → [filing dicts]
+_060_sec_to_edinet: dict | None = None  # sec_code → set of edinet codes
+_060_all_060: list | None = None        # flat list of ALL 060 filings (for fund search)
+_060_built_at: float = 0
+_060_result_cache: dict = {}            # stock_code → (timestamp, json_str)
+_060_building: bool = False             # prevents concurrent builds
+_060_INDEX_TTL = 3600                   # rebuild index every hour
+_060_RESULT_TTL = 1800                  # cache per-stock results for 30 min
+_060_SCAN_DAYS = 365
+
+
+def _build_060_index(days: int = _060_SCAN_DAYS):
+    """Build the 大量保有 index using connection-pooled HTTP."""
+    global _060_index, _060_sec_to_edinet, _060_all_060, _060_built_at, _060_building
+    import datetime as dt
+    from concurrent.futures import ThreadPoolExecutor
+    import httpx
+
+    with _060_index_lock:
+        if _060_building:
+            return  # another thread is already building
+        _060_building = True
+
+    try:
+        today = dt.date.today()
+        sec_map: dict = {}
+        filings: dict = {}
+        all_060: list = []
+        seen: set = set()
+        auth_key = settings.edinet_subscription_key or settings.edinet_api_key
+
+        # Single httpx.Client with connection pooling — reuses TCP connections
+        # across all 90 requests instead of opening 90 separate connections
+        with httpx.Client(
+            timeout=10,
+            limits=httpx.Limits(max_connections=60, max_keepalive_connections=30),
+        ) as client:
+            def _fetch(delta):
+                d = (today - dt.timedelta(days=delta)).strftime("%Y-%m-%d")
+                try:
+                    r = client.get(
+                        f"{settings.edinet_base_url}/documents.json",
+                        params={"date": d, "type": 2, "Subscription-Key": auth_key},
+                    )
+                    return r.json().get("results", []) if r.status_code == 200 else []
+                except Exception:
+                    return []
+
+            with ThreadPoolExecutor(max_workers=50) as pool:
+                for docs in pool.map(_fetch, range(days)):
+                    for doc in docs:
+                        sc = doc.get("secCode") or ""
+                        ec = doc.get("edinetCode") or ""
+                        if sc and ec:
+                            sec_map.setdefault(sc, set()).add(ec)
+                        if (doc.get("ordinanceCode") or "") == "060":
+                            did = doc.get("docID")
+                            if did and did not in seen:
+                                seen.add(did)
+                                issuer = doc.get("issuerEdinetCode") or ""
+                                entry = {
+                                    "date": (doc.get("submitDateTime") or "")[:10],
+                                    "filer_jp": doc.get("filerName") or "",
+                                    "type": doc.get("docDescription") or "",
+                                    "doc_id": did,
+                                    "doc_type_code": str(doc.get("docTypeCode") or ""),
+                                    "issuer_edinet": issuer,
+                                    "issuer_name": doc.get("issuerName") or "",
+                                    "sec_code": doc.get("secCode") or "",
+                                }
+                                filings.setdefault(issuer, []).append(entry)
+                                all_060.append(entry)
+
+        with _060_index_lock:
+            _060_index = filings
+            _060_sec_to_edinet = sec_map
+            _060_all_060 = all_060
+            _060_built_at = time.time()
+            _060_result_cache.clear()
+        logger.info("EDINET 060 index built: %d filings, %d sec_codes in %.1fs",
+                     len(seen), len(sec_map), time.time() - _060_built_at)
+    finally:
+        _060_building = False
+
+
+def _ensure_060_index(days: int = _060_SCAN_DAYS):
+    """Ensure the index is ready. Returns immediately if already built."""
+    with _060_index_lock:
+        if _060_index is not None and time.time() - _060_built_at < _060_INDEX_TTL:
+            return
+    _build_060_index(days)
+
+
+def warm_060_index():
+    """Call from server startup to pre-build the index in background."""
+    t = threading.Thread(target=_build_060_index, daemon=True)
+    t.start()
+    logger.info("EDINET 060 index warming started in background")
+
+
 def _tool_get_large_shareholders(inp: dict) -> str:
     """Search EDINET for 大量保有報告書 filed ABOUT a given company.
 
-    Strategy (same as report.py):
-    1. Discover the target company's EDINET code from its own filings
-    2. Collect ALL 大量保有 filings (ordinanceCode "060") across all scanned days
-    3. Filter by issuerEdinetCode == target EDINET code
-    4. Download + parse each filing for filer name, stake %, purpose
-    5. Flag known activists
+    Uses a shared in-memory index (built once, reused for ~1 hour).
+    First call: ~3-5s to build index.  Subsequent calls: instant lookup.
     """
-    import datetime as dt
-    import threading
+    import time as _time
     import unicodedata
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    import httpx
     from app.services.edinet import EdinetClient
 
     stock_code = inp["stock_code"].strip()
-    days_back = min(inp.get("days_back", 400), 730)
+
+    # Check result cache first (instant)
+    cached = _060_result_cache.get(stock_code)
+    if cached and _time.time() - cached[0] < _060_RESULT_TTL:
+        report_progress(100, "cached")
+        return cached[1]
+
+    report_progress(10, "connecting to EDINET")
     edinet = EdinetClient()
+    days_back = min(inp.get("days_back", 365), 730)
 
+    # Build/reuse the shared index
+    report_progress(20, "building index")
+    _ensure_060_index(max(days_back, _060_SCAN_DAYS))
+    report_progress(50, "searching filings")
+
+    # Lookup: sec_code → edinet_codes → filings (instant)
     sec_code = f"{stock_code}0"
-    today = dt.date.today()
-    target_edinet_codes: set = set()
-    all_060_filings: list = []
-    seen_ids: set = set()
-    lock = threading.Lock()
+    target_codes = set()
+    with _060_index_lock:
+        target_codes = _060_sec_to_edinet.get(sec_code, set()).copy() if _060_sec_to_edinet else set()
 
-    def _scan_day(delta: int):
-        check_date = (today - dt.timedelta(days=delta)).strftime("%Y-%m-%d")
-        try:
-            url = f"{settings.edinet_base_url}/documents.json"
-            params = {
-                "date": check_date,
-                "type": 2,
-                "Subscription-Key": settings.edinet_subscription_key or settings.edinet_api_key,
-            }
-            resp = httpx.get(url, params=params, timeout=10)
-            if resp.status_code != 200:
-                return set(), []
-            data = resp.json()
-            codes: set = set()
-            hits: list = []
-            for doc in data.get("results", []):
-                # Discover target company's EDINET code from its own filings
-                if (doc.get("secCode") or "") == sec_code:
-                    ec = doc.get("edinetCode")
-                    if ec:
-                        codes.add(ec)
-                # Collect all 大量保有 filings (ordinanceCode "060")
-                if (doc.get("ordinanceCode") or "") == "060":
-                    hits.append({
-                        "date": (doc.get("submitDateTime") or "")[:10],
-                        "filer_jp": doc.get("filerName") or "",
-                        "type": doc.get("docDescription") or "",
-                        "doc_id": doc.get("docID"),
-                        "doc_type_code": str(doc.get("docTypeCode") or ""),
-                        "_issuer_edinet": doc.get("issuerEdinetCode") or "",
-                    })
-            return codes, hits
-        except Exception:
-            return set(), []
-
-    # Concurrent scan in batches
-    BATCH_SIZE = 30
-    for batch_start in range(0, days_back, BATCH_SIZE):
-        with lock:
-            if target_edinet_codes:
-                matched = sum(1 for f in all_060_filings if f.get("_issuer_edinet") in target_edinet_codes)
-                if matched >= 10:
-                    break
-                # Early exit: if we identified the company but found zero 5% filings
-                # after scanning 180+ days, stop — there likely aren't any.
-                if batch_start >= 180 and matched == 0:
-                    break
-        batch_end = min(batch_start + BATCH_SIZE, days_back)
-        deltas = list(range(batch_start, batch_end))
-        with ThreadPoolExecutor(max_workers=min(30, len(deltas))) as pool:
-            futures = {pool.submit(_scan_day, d): d for d in deltas}
-            for future in as_completed(futures):
-                try:
-                    codes, hits = future.result()
-                except Exception:
-                    continue
-                with lock:
-                    target_edinet_codes.update(codes)
-                    for hit in hits:
-                        doc_id = hit.get("doc_id")
-                        if doc_id and doc_id not in seen_ids:
-                            seen_ids.add(doc_id)
-                            all_060_filings.append(hit)
-
-    # Filter: keep only filings targeting our company
     filings = []
-    for f in all_060_filings:
-        issuer = f.pop("_issuer_edinet", "")
-        if issuer in target_edinet_codes:
-            filings.append(f)
+    with _060_index_lock:
+        if _060_index:
+            for ec in target_codes:
+                filings.extend(_060_index.get(ec, []))
     filings.sort(key=lambda x: x.get("date", ""), reverse=True)
+    report_progress(60, f"found {len(filings)} filings")
 
     if not filings:
-        return json.dumps({
+        result = json.dumps({
             "stock_code": stock_code,
             "filings_found": 0,
             "filings": [],
@@ -1661,9 +1748,11 @@ def _tool_get_large_shareholders(inp: dict) -> str:
             "_sources": ["EDINET"],
             "_source_details": {"EDINET": {"type": "api", "desc": f"EDINET API v2 — 大量保有 scan for {stock_code} ({days_back}d)", "url": "https://disclosure2.edinet-fsa.go.jp/WEEK0010.aspx"}},
         })
+        _060_result_cache[stock_code] = (_time.time(), result)
+        return result
 
     # Parse top filings for stake details (parallel)
-    top_filings = filings[:10]
+    top_filings = filings[:6]
 
     def _parse_one(doc):
         doc_id = doc.get("doc_id") or ""
@@ -1695,16 +1784,21 @@ def _tool_get_large_shareholders(inp: dict) -> str:
             "doc_id": doc_id,
         }
 
+    report_progress(65, "parsing filing details")
     parsed = []
+    total_to_parse = len(top_filings)
+    parsed_count = 0
     with ThreadPoolExecutor(max_workers=min(8, len(top_filings))) as pool:
         futs = {pool.submit(_parse_one, f): f for f in top_filings}
         for fut in as_completed(futs):
             try:
-                result = fut.result()
-                if result:
-                    parsed.append(result)
+                r = fut.result()
+                if r:
+                    parsed.append(r)
             except Exception:
                 pass
+            parsed_count += 1
+            report_progress(65 + int(30 * parsed_count / max(total_to_parse, 1)), f"parsed {parsed_count}/{total_to_parse}")
 
     # Sort by date descending
     parsed.sort(key=lambda x: x.get("date", ""), reverse=True)
@@ -1719,7 +1813,6 @@ def _tool_get_large_shareholders(inp: dict) -> str:
         seen_filers.add(key)
         unique.append(f)
 
-    # Count activists
     activist_count = sum(1 for f in unique if f.get("is_activist"))
 
     edinet_details = {
@@ -1733,7 +1826,7 @@ def _tool_get_large_shareholders(inp: dict) -> str:
         ],
     }
 
-    return json.dumps({
+    result = json.dumps({
         "stock_code": stock_code,
         "filings_found": len(filings),
         "unique_filers": len(unique),
@@ -1743,6 +1836,8 @@ def _tool_get_large_shareholders(inp: dict) -> str:
         "_sources": ["EDINET"],
         "_source_details": {"EDINET": edinet_details},
     })
+    _060_result_cache[stock_code] = (_time.time(), result)
+    return result
 
 
 def _tool_search_fund_holdings(inp: dict) -> str:
@@ -1752,20 +1847,15 @@ def _tool_search_fund_holdings(inp: dict) -> str:
     filer name matches the given fund. Returns all target companies the fund
     holds 5%+ stakes in, with stake details.
     """
-    import datetime as dt
-    import threading
     import unicodedata
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    import httpx
 
     fund_name = inp["fund_name"].strip()
-    days_back = min(inp.get("days_back", 730), 730)
 
     # Build search variants: English, Japanese katakana, lowercase
     fund_lower = fund_name.lower()
     search_variants = {fund_lower}
 
-    # Map common English names to Japanese equivalents for broader matching
     _NAME_MAP = {
         "oasis": ["オアシス", "oasis management"],
         "elliott": ["エリオット", "elliott management", "elliott advisors"],
@@ -1786,13 +1876,7 @@ def _tool_search_fund_holdings(inp: dict) -> str:
         if key in fund_lower or fund_lower in key:
             for v in variants:
                 search_variants.add(v.lower())
-    # Also add the raw input as-is for Japanese input
     search_variants.add(unicodedata.normalize("NFKC", fund_name).lower())
-
-    today = dt.date.today()
-    matched_filings: list = []
-    seen_ids: set = set()
-    lock = threading.Lock()
 
     def _filer_matches(filer_name: str) -> bool:
         if not filer_name:
@@ -1800,59 +1884,24 @@ def _tool_search_fund_holdings(inp: dict) -> str:
         filer_norm = unicodedata.normalize("NFKC", filer_name).lower()
         return any(variant in filer_norm for variant in search_variants)
 
-    def _scan_day(delta: int):
-        check_date = (today - dt.timedelta(days=delta)).strftime("%Y-%m-%d")
-        try:
-            url = f"{settings.edinet_base_url}/documents.json"
-            params = {
-                "date": check_date,
-                "type": 2,
-                "Subscription-Key": settings.edinet_subscription_key or settings.edinet_api_key,
-            }
-            resp = httpx.get(url, params=params, timeout=10)
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            hits = []
-            for doc in data.get("results", []):
-                if (doc.get("ordinanceCode") or "") != "060":
-                    continue
-                filer = doc.get("filerName") or ""
-                if _filer_matches(filer):
-                    hits.append({
-                        "date": (doc.get("submitDateTime") or "")[:10],
-                        "filer_jp": filer,
-                        "doc_description": doc.get("docDescription") or "",
-                        "doc_id": doc.get("docID"),
-                        "issuer_edinet_code": doc.get("issuerEdinetCode") or "",
-                        "issuer_name": doc.get("issuerName") or "",
-                        "sec_code": doc.get("secCode") or "",
-                    })
-            return hits
-        except Exception:
-            return []
+    # Use the shared 060 index (instant if already built)
+    _ensure_060_index()
 
-    # Concurrent scan
-    BATCH_SIZE = 30
-    for batch_start in range(0, days_back, BATCH_SIZE):
-        with lock:
-            if len(matched_filings) >= 30:
-                break
-        batch_end = min(batch_start + BATCH_SIZE, days_back)
-        deltas = list(range(batch_start, batch_end))
-        with ThreadPoolExecutor(max_workers=min(30, len(deltas))) as pool:
-            futures = {pool.submit(_scan_day, d): d for d in deltas}
-            for future in as_completed(futures):
-                try:
-                    hits = future.result()
-                except Exception:
-                    continue
-                with lock:
-                    for hit in hits:
-                        doc_id = hit.get("doc_id")
-                        if doc_id and doc_id not in seen_ids:
-                            seen_ids.add(doc_id)
-                            matched_filings.append(hit)
+    matched_filings: list = []
+    with _060_index_lock:
+        if _060_all_060:
+            matched_filings = [f for f in _060_all_060 if _filer_matches(f.get("filer_jp", ""))]
+
+    # Remap field names to match expected format
+    matched_filings = [{
+        "date": f.get("date", ""),
+        "filer_jp": f.get("filer_jp", ""),
+        "doc_description": f.get("type", ""),
+        "doc_id": f.get("doc_id", ""),
+        "issuer_edinet_code": f.get("issuer_edinet", ""),
+        "issuer_name": f.get("issuer_name", ""),
+        "sec_code": f.get("sec_code", ""),
+    } for f in matched_filings]
 
     matched_filings.sort(key=lambda x: x.get("date", ""), reverse=True)
 
@@ -1861,7 +1910,7 @@ def _tool_search_fund_holdings(inp: dict) -> str:
             "fund_name": fund_name,
             "filings_found": 0,
             "holdings": [],
-            "note": f"No 大量保有報告書 found filed by '{fund_name}' in {days_back} days. Try web_search for '{fund_name} Japan holdings positions' for additional sources.",
+            "note": f"No 大量保有報告書 found filed by '{fund_name}' in {_060_SCAN_DAYS} days. Try web_search for '{fund_name} Japan holdings positions' for additional sources.",
             "_sources": ["EDINET"],
         })
 
@@ -1926,7 +1975,7 @@ def _tool_search_fund_holdings(inp: dict) -> str:
         "_sources": ["EDINET"],
         "_source_details": {"EDINET": {
             "type": "filings",
-            "desc": f"EDINET 大量保有報告書 filed by {fund_name} ({len(matched_filings)} total, {days_back}d scan)",
+            "desc": f"EDINET 大量保有報告書 filed by {fund_name} ({len(matched_filings)} total, {_060_SCAN_DAYS}d scan)",
             "items": [
                 {"doc_id": p["doc_id"], "filer": p["filer"], "date": p["date"],
                  "description": f"{p['target_company']} — {p.get('doc_type', '')}",
@@ -2118,11 +2167,13 @@ def _tool_get_shareholder_structure(inp: dict) -> str:
     import unicodedata
     from app.services.edinet import EdinetClient
 
+    report_progress(10, "connecting to EDINET")
     client = EdinetClient()
     stock_code = inp["stock_code"].strip()
     days_back = min(inp.get("days_back", 400), 730)
 
     # Find the latest annual report (doc_type_code 120 = 有価証券報告書)
+    report_progress(20, "searching annual reports")
     try:
         docs = client.latest_filings_for_code(
             stock_code=stock_code,
@@ -2132,6 +2183,7 @@ def _tool_get_shareholder_structure(inp: dict) -> str:
         )
     except Exception:
         docs = []
+    report_progress(35, f"found {len(docs)} filings")
 
     # Prefer annual reports (120), then quarterly (130)
     annual = [d for d in docs if str(d.doc_type_code) == "120"]
@@ -2153,12 +2205,14 @@ def _tool_get_shareholder_structure(inp: dict) -> str:
     doc_id = target_doc.doc_id
 
     # Download the XBRL zip ONCE, then search ALL HTML files for the data
+    report_progress(45, "downloading XBRL filing")
     shareholders = []
     ownership = {}
     try:
         zip_bytes = client.download_xbrl_zip(doc_id)
     except Exception:
         zip_bytes = b""
+    report_progress(65, "parsing shareholder data")
 
     if zip_bytes:
         import io as _io, zipfile as _zf
@@ -2166,7 +2220,8 @@ def _tool_get_shareholder_structure(inp: dict) -> str:
             with _zf.ZipFile(_io.BytesIO(zip_bytes)) as zf:
                 # Get all HTML files from the zip, sorted by name (section order)
                 htmls = sorted([n for n in zf.namelist() if n.lower().endswith((".htm", ".html", ".xhtml"))])
-                for html_name in htmls:
+                total_htmls = len(htmls)
+                for hi, html_name in enumerate(htmls):
                     try:
                         html_bytes = zf.read(html_name)
                     except Exception:
@@ -2189,6 +2244,7 @@ def _tool_get_shareholder_structure(inp: dict) -> str:
                         except Exception:
                             pass
 
+                    report_progress(65 + int(25 * (hi + 1) / max(total_htmls, 1)), f"scanning page {hi+1}/{total_htmls}")
                     # Stop early if we found both
                     if shareholders and ownership and any(v is not None for v in ownership.values()):
                         break
@@ -2197,11 +2253,13 @@ def _tool_get_shareholder_structure(inp: dict) -> str:
 
         # Fallback: try XBRL-based ownership extraction
         if not ownership or not any(v is not None for v in ownership.values()):
+            report_progress(90, "extracting XBRL ownership")
             try:
                 ownership = client.extract_ownership_xbrl(doc_id)
             except Exception:
                 ownership = {}
 
+    report_progress(95, "translating names")
     # Translate shareholder names and flag activists
     translated_holders = []
     for sh in shareholders:
@@ -2261,12 +2319,15 @@ def _tool_get_directors(inp: dict) -> str:
     data = None
 
     # Try cache first
+    report_progress(15, "checking cache")
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             data = json.load(f)
+        report_progress(80, "loaded from cache")
 
     # If no cache, call the real directors API (full pipeline)
     if data is None:
+        report_progress(20, "fetching from EDINET")
         try:
             from app.services.directors import get_director_network
             company_name = inp.get("company_name", inp["stock_code"])
@@ -2307,7 +2368,9 @@ def _tool_get_directors(inp: dict) -> str:
 def _tool_analyze_technicals(inp: dict) -> str:
     """Full technical analysis computed from price data."""
     stock_code = inp["stock_code"].strip()
+    report_progress(15, "fetching 250-day prices")
     price_str = _dispatch_tool("get_stock_prices", {"stock_code": stock_code, "days": 250})
+    report_progress(50, "computing indicators")
     pd = json.loads(price_str)
     if "error" in pd:
         return json.dumps({"error": f"Cannot analyze: {pd['error']}"})
@@ -2319,6 +2382,7 @@ def _tool_analyze_technicals(inp: dict) -> str:
     cur = closes[-1]
 
     # Moving Averages
+    report_progress(65, "calculating MAs + RSI")
     sma5 = _ta_sma(closes, 5)
     sma20 = _ta_sma(closes, 20)
     sma50 = _ta_sma(closes, 50)
@@ -2607,6 +2671,7 @@ def _tool_analyze_risk(inp: dict) -> str:
 def _tool_score_company(inp: dict) -> str:
     """Piotroski F-Score + Value/Growth/Quality/Activist scores + Fair Value."""
     stock_code = inp["stock_code"].strip()
+    report_progress(10, "fetching financials")
     fin_str = _dispatch_tool("get_financials", {"stock_code": stock_code})
     fin_data = json.loads(fin_str)
     if "error" in fin_data:
@@ -2615,8 +2680,10 @@ def _tool_score_company(inp: dict) -> str:
     if len(stmts) < 2:
         return json.dumps({"error": "Need 2+ financial periods for scoring"})
 
+    report_progress(40, "fetching prices")
     price_str = _dispatch_tool("get_stock_prices", {"stock_code": stock_code, "days": 30})
     price_data = json.loads(price_str)
+    report_progress(60, "computing scores")
     latest, prior = stmts[-1], stmts[-2]
 
     def pv(e, k):
@@ -2965,6 +3032,7 @@ def _tool_screen_sector(inp: dict) -> str:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from app.services.peer_db import PeerDatabase
 
+    report_progress(5, "resolving sector")
     db = PeerDatabase()
     stock_code = inp.get("stock_code", "").strip()
     sector_name = inp.get("sector", "").strip()
@@ -3115,7 +3183,10 @@ def _tool_screen_sector(inp: dict) -> str:
         except Exception:
             return None
 
+    report_progress(15, f"screening {len(codes_names)} companies")
     results = []
+    _screened = 0
+    _total_screen = len(codes_names)
     with ThreadPoolExecutor(max_workers=5) as pool:
         futs = {pool.submit(_fetch_one, cn): cn for cn in codes_names}
         for fut in as_completed(futs):
@@ -3125,7 +3196,10 @@ def _tool_screen_sector(inp: dict) -> str:
                     results.append(r)
             except Exception:
                 pass
+            _screened += 1
+            report_progress(15 + int(75 * _screened / max(_total_screen, 1)), f"scored {_screened}/{_total_screen}")
 
+    report_progress(95, "ranking results")
     sort_fn = {
         "composite": lambda x: -(x.get("composite") or 0),
         "value": lambda x: -(x.get("value") or 0),
@@ -3627,15 +3701,45 @@ async def stream_chat_response(messages: list[dict], *, mode: str = "stream") ->
                     call_data = json.dumps({"id": tool_block.id, "tool": tool_block.name, "input": tool_block.input})
                     yield f"event: tool_call\ndata: {call_data}\n\n"
 
-                # Execute ALL tool calls in PARALLEL (60s timeout per tool)
+                # Execute ALL tool calls in PARALLEL with real-time progress
+                _SLOW_TOOLS = {"get_large_shareholders", "get_shareholder_structure", "search_fund_holdings"}
+                progress_q: asyncio.Queue = asyncio.Queue()
+                loop = asyncio.get_event_loop()
+
+                def _make_progress_fn(tool_id, tool_name):
+                    """Create a thread-safe progress reporter for a specific tool."""
+                    def _report(pct: int, stage: str = ""):
+                        loop.call_soon_threadsafe(
+                            progress_q.put_nowait,
+                            {"id": tool_id, "tool": tool_name, "pct": min(pct, 100), "stage": stage},
+                        )
+                    return _report
+
                 async def _run_tool(block):
+                    t = 120 if block.name in _SLOW_TOOLS else 60
+                    pfn = _make_progress_fn(block.id, block.name)
+                    pfn(5, "starting")
                     return block, await asyncio.wait_for(
-                        asyncio.to_thread(_dispatch_tool, block.name, block.input),
-                        timeout=60,
+                        asyncio.to_thread(_dispatch_tool, block.name, block.input, pfn),
+                        timeout=t,
                     )
 
-                tasks = [_run_tool(tb) for tb in tool_uses]
-                results_list = await asyncio.gather(*tasks, return_exceptions=True)
+                tasks = [asyncio.ensure_future(_run_tool(tb)) for tb in tool_uses]
+                gather_task = asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True))
+
+                # Stream progress events while tools run
+                while not gather_task.done():
+                    try:
+                        evt = await asyncio.wait_for(progress_q.get(), timeout=0.15)
+                        yield f"event: tool_progress\ndata: {json.dumps(evt)}\n\n"
+                    except asyncio.TimeoutError:
+                        pass
+                # Drain remaining progress events
+                while not progress_q.empty():
+                    evt = progress_q.get_nowait()
+                    yield f"event: tool_progress\ndata: {json.dumps(evt)}\n\n"
+
+                results_list = gather_task.result()
 
                 # Send results back to frontend and build tool_results for Claude
                 tool_results = []

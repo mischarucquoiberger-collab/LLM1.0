@@ -187,7 +187,7 @@ export async function deleteJob(jobId) {
  * Stream a chat query to the Claude-powered backend.
  * Uses POST with ReadableStream (since EventSource only supports GET).
  */
-export async function streamChat(messages, { onText, onToolCall, onToolResult, onError, onDone, signal, mode } = {}) {
+export async function streamChat(messages, { onText, onToolCall, onToolResult, onToolProgress, onError, onDone, signal, mode } = {}) {
   let res;
   try {
     res = await fetch('/api/chat', {
@@ -236,6 +236,7 @@ export async function streamChat(messages, { onText, onToolCall, onToolResult, o
                 if (eventType === 'text') onText?.(data.text);
                 else if (eventType === 'tool_call') onToolCall?.(data);
                 else if (eventType === 'tool_result') onToolResult?.(data);
+                else if (eventType === 'tool_progress') onToolProgress?.(data);
                 else if (eventType === 'error') { finished = true; fireError(data.message); }
                 else if (eventType === 'done') { if (!finished) { finished = true; onDone?.(); } }
               } catch {}

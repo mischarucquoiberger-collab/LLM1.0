@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Mic, Square, Volume2, VolumeX, Gauge } from "lucide-react";
+import { X, Mic, MicOff, Square, Gauge } from "lucide-react";
 import { streamChat } from "@/api/backend";
 
 /* ── Browser support ───────────────────────────────────── */
@@ -909,7 +909,7 @@ export default function VoiceOverlay({ isOpen, onClose }) {
     }
     else if (newState === S.LISTENING) setStatusLabel(pick(STATUS_POOL.listening));
     else if (newState === S.PROCESSING) setStatusLabel(pick(STATUS_POOL.processing));
-    else if (newState === S.SPEAKING) setStatusLabel(mutedRef.current ? "Speaking (muted)\u2026" : "Tap orb to stop\u2026");
+    else if (newState === S.SPEAKING) setStatusLabel(mutedRef.current ? "Speaking (mic off)\u2026" : "Tap orb to stop\u2026");
   }, []);
 
   /* ══════════════════════════════════════════════════════
@@ -1470,12 +1470,6 @@ export default function VoiceOverlay({ isOpen, onClose }) {
     setCurrentPhraseRef.current(stripMarkdown(text));
     setPhraseKeyRef.current((k) => k + 1);
 
-    if (mutedRef.current) {
-      const ms = Math.min(Math.max(text.length * 30, 400), 2000);
-      await new Promise((r) => setTimeout(r, ms));
-      return;
-    }
-
     const controller = new AbortController();
     ttsAbortRef.current = controller;
 
@@ -1512,7 +1506,7 @@ export default function VoiceOverlay({ isOpen, onClose }) {
          The gain node is stored in ttsGainRef so it can be dynamically ducked further
          when the user starts speaking (speechstart event). */
       const gain = ctx.createGain();
-      gain.gain.value = mutedRef.current ? 0 : 0.7;
+      gain.gain.value = 0.7;
       source.connect(gain);
       gain.connect(ctx.destination);
       ttsSourceRef.current = source;
@@ -1628,12 +1622,18 @@ export default function VoiceOverlay({ isOpen, onClose }) {
     mutedRef.current = next;
     setIsMuted(next);
     if (next) {
-      cancelTTS();
-      if (stateRef.current === S.SPEAKING) setStatusLabel("Speaking (muted)\u2026");
+      /* Mute user's mic — pause recognition so user's audio is not captured */
+      try { recognitionRef.current?.stop(); } catch {}
     } else {
-      if (stateRef.current === S.SPEAKING) setStatusLabel("");
+      /* Unmute user's mic — restart listening if in a listening-compatible state */
+      const s = stateRef.current;
+      if (s === S.IDLE || s === S.LISTENING) {
+        startRecognitionRef.current?.(false);
+      } else if (s === S.SPEAKING) {
+        startRecognitionRef.current?.(true); /* passive wake-word mode */
+      }
     }
-  }, [cancelTTS]);
+  }, []);
 
   const cycleSpeed = useCallback(() => {
     setTtsSpeedIdx((prev) => {
@@ -2122,9 +2122,9 @@ export default function VoiceOverlay({ isOpen, onClose }) {
                   isMuted ? "text-orange-400/60 bg-orange-500/[0.08]" : "text-white/25 hover:text-white/50 hover:bg-white/[0.06]"
                 }`}
                 whileTap={{ scale: 0.88 }}
-                title={isMuted ? "Unmute (M)" : "Mute (M)"}
+                title={isMuted ? "Unmute mic (M)" : "Mute mic (M)"}
               >
-                {isMuted ? <VolumeX className="w-[16px] h-[16px]" /> : <Volume2 className="w-[16px] h-[16px]" />}
+                {isMuted ? <MicOff className="w-[16px] h-[16px]" /> : <Mic className="w-[16px] h-[16px]" />}
               </motion.button>
 
               {/* Mic / Stop button — primary action */}

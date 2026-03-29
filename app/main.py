@@ -23,6 +23,12 @@ from app.services import eta  # ETA model
 
 app = FastAPI(title="LLM Research Report MVP")
 
+# Pre-build EDINET 大量保有 index in background on startup (makes first query instant)
+@app.on_event("startup")
+async def _warm_edinet_index():
+    from app.services.chat import warm_060_index
+    warm_060_index()
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 

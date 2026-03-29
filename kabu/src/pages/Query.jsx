@@ -43,22 +43,22 @@ function newConvoId() { return Date.now().toString(36) + Math.random().toString(
 
 /* ── Tool metadata ──────────────────────────────────────── */
 const TOOL_META = {
-  lookup_company:        { icon: Search,     label: "Company lookup",      color: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/20" },
-  get_stock_prices:      { icon: TrendingUp, label: "Stock prices",        color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20" },
-  get_financials:        { icon: FileText,   label: "Financials",          color: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/20" },
-  search_edinet_filings: { icon: FileText,   label: "EDINET filings",      color: "text-violet-400",  bg: "bg-violet-500/10",  border: "border-violet-500/20" },
-  web_search:            { icon: Globe,      label: "Web search",          color: "text-cyan-400",    bg: "bg-cyan-500/10",    border: "border-cyan-500/20" },
-  get_directors:         { icon: Users,      label: "Board data",          color: "text-pink-400",    bg: "bg-pink-500/10",    border: "border-pink-500/20" },
-  get_voting_results:    { icon: FileText,   label: "AGM voting",          color: "text-orange-400",  bg: "bg-orange-500/10",  border: "border-orange-500/20" },
-  get_large_shareholders:{ icon: Users,      label: "Large shareholders",  color: "text-red-400",     bg: "bg-red-500/10",     border: "border-red-500/20" },
-  analyze_technicals:    { icon: Activity,   label: "Technical analysis",  color: "text-teal-400",    bg: "bg-teal-500/10",    border: "border-teal-500/20" },
-  score_company:         { icon: BarChart3,  label: "Quant scoring",       color: "text-yellow-400",  bg: "bg-yellow-500/10",  border: "border-yellow-500/20" },
-  get_company_peers:     { icon: Layers,     label: "Sector peers",        color: "text-lime-400",    bg: "bg-lime-500/10",    border: "border-lime-500/20" },
-  get_market_context:    { icon: Globe,      label: "Market context",      color: "text-indigo-400",  bg: "bg-indigo-500/10",  border: "border-indigo-500/20" },
-  screen_sector:         { icon: BarChart3,  label: "Sector screener",     color: "text-fuchsia-400", bg: "bg-fuchsia-500/10", border: "border-fuchsia-500/20" },
-  analyze_risk:          { icon: Shield,       label: "Risk analytics",      color: "text-orange-400",  bg: "bg-orange-500/10",  border: "border-orange-500/20" },
-  detect_red_flags:      { icon: AlertTriangle, label: "Red flag detection", color: "text-red-400",     bg: "bg-red-500/10",     border: "border-red-500/20" },
-  get_shareholder_structure: { icon: Users,    label: "Shareholder structure", color: "text-sky-400",  bg: "bg-sky-500/10",     border: "border-sky-500/20" },
+  lookup_company:        { icon: Search,     label: "Company lookup",      color: "text-blue-400",    bg: "bg-blue-500/10",    hex: "#60a5fa" },
+  get_stock_prices:      { icon: TrendingUp, label: "Stock prices",        color: "text-emerald-400", bg: "bg-emerald-500/10", hex: "#34d399" },
+  get_financials:        { icon: FileText,   label: "Financials",          color: "text-amber-400",   bg: "bg-amber-500/10",   hex: "#fbbf24" },
+  search_edinet_filings: { icon: FileText,   label: "EDINET filings",      color: "text-violet-400",  bg: "bg-violet-500/10",  hex: "#a78bfa" },
+  web_search:            { icon: Globe,      label: "Web search",          color: "text-cyan-400",    bg: "bg-cyan-500/10",    hex: "#22d3ee" },
+  get_directors:         { icon: Users,      label: "Board data",          color: "text-pink-400",    bg: "bg-pink-500/10",    hex: "#f472b6" },
+  get_voting_results:    { icon: FileText,   label: "AGM voting",          color: "text-orange-400",  bg: "bg-orange-500/10",  hex: "#fb923c" },
+  get_large_shareholders:{ icon: Users,      label: "Large shareholders",  color: "text-red-400",     bg: "bg-red-500/10",     hex: "#f87171" },
+  analyze_technicals:    { icon: Activity,   label: "Technical analysis",  color: "text-teal-400",    bg: "bg-teal-500/10",    hex: "#2dd4bf" },
+  score_company:         { icon: BarChart3,  label: "Quant scoring",       color: "text-yellow-400",  bg: "bg-yellow-500/10",  hex: "#facc15" },
+  get_company_peers:     { icon: Layers,     label: "Sector peers",        color: "text-lime-400",    bg: "bg-lime-500/10",    hex: "#a3e635" },
+  get_market_context:    { icon: Globe,      label: "Market context",      color: "text-indigo-400",  bg: "bg-indigo-500/10",  hex: "#818cf8" },
+  screen_sector:         { icon: BarChart3,  label: "Sector screener",     color: "text-fuchsia-400", bg: "bg-fuchsia-500/10", hex: "#e879f9" },
+  analyze_risk:          { icon: Shield,       label: "Risk analytics",      color: "text-orange-400",  bg: "bg-orange-500/10",  hex: "#fb923c" },
+  detect_red_flags:      { icon: AlertTriangle, label: "Red flag detection", color: "text-red-400",     bg: "bg-red-500/10",     hex: "#f87171" },
+  get_shareholder_structure: { icon: Users,    label: "Shareholder structure", color: "text-sky-400",  bg: "bg-sky-500/10",     hex: "#38bdf8" },
 };
 
 /* ── Tool helpers ─────────────────────────────────────────── */
@@ -133,80 +133,546 @@ function getQuickActions(tools) {
   return pool.filter(a => !used.has(a.key)).slice(0, 4);
 }
 
-/* ── Tool Pill (Apple glass style) ─────────────────────────── */
-function ToolPill({ tool, input, result, isLoading, sources }) {
+/* ── Tool Pill — Ultra-premium Apple HIG ──────────────────── */
+
+/* Tool-specific expected durations (seconds) for fallback progress */
+const TOOL_SPEED = {
+  lookup_company: 1.5, get_stock_prices: 3, get_financials: 4, web_search: 3,
+  get_directors: 8, get_voting_results: 8, get_large_shareholders: 10,
+  get_shareholder_structure: 12, search_edinet_filings: 6, analyze_technicals: 4,
+  score_company: 5, get_company_peers: 3, get_market_context: 3, screen_sector: 8,
+  analyze_risk: 5, detect_red_flags: 5, search_fund_holdings: 10,
+};
+
+function useToolProgress(active, tool) {
+  const [pct, setPct] = useState(0);
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    if (active) {
+      startRef.current = Date.now();
+      const k = TOOL_SPEED[tool] || 5;
+      const tick = () => {
+        const t = (Date.now() - startRef.current) / 1000 / k;
+        const v = t < 0.3 ? (t / 0.3) * 60 : t < 0.7 ? 60 + ((t - 0.3) / 0.4) * 25 : 85 + 10 * (1 - Math.exp(-(t - 0.7) * 1.5));
+        setPct(Math.min(Math.round(v), 95));
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } else if (startRef.current !== null) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      setPct(100);
+      startRef.current = null;
+    }
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [active, tool]);
+  return pct;
+}
+
+/* Smooth spring-like number interpolation */
+function useSmoothNumber(target) {
+  const [display, setDisplay] = useState(target);
+  const rafRef = useRef(null);
+  const currentRef = useRef(target);
+  const velocityRef = useRef(0);
+  useEffect(() => {
+    const animate = () => {
+      const diff = target - currentRef.current;
+      if (Math.abs(diff) < 0.5 && Math.abs(velocityRef.current) < 0.1) {
+        currentRef.current = target; velocityRef.current = 0; setDisplay(target); return;
+      }
+      // Spring physics: stiffness=0.08, damping=0.82
+      velocityRef.current = velocityRef.current * 0.82 + diff * 0.08;
+      currentRef.current += velocityRef.current;
+      setDisplay(Math.round(currentRef.current));
+      rafRef.current = requestAnimationFrame(animate);
+    };
+    rafRef.current = requestAnimationFrame(animate);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [target]);
+  return display;
+}
+
+/* Orbiting particle canvas for loading state */
+function OrbitalRing({ hex, pct, size = 36 }) {
+  const canvasRef = useRef(null);
+  const rafRef = useRef(null);
+  const startRef = useRef(Date.now());
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    ctx.scale(dpr, dpr);
+
+    const cx = size / 2, cy = size / 2, r = size / 2 - 3;
+    const NUM_PARTICLES = 8;
+    const TAIL_LEN = 0.35; // radians of tail per particle
+
+    // Parse hex to rgb
+    const hexToRgb = (h) => {
+      const n = parseInt(h.slice(1), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    };
+    const [pr, pg, pb] = hexToRgb(hex);
+
+    const draw = () => {
+      const t = (Date.now() - startRef.current) / 1000;
+      ctx.clearRect(0, 0, size, size);
+
+      // Track circle
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, 0.12)`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Progress arc (bold, glowing)
+      const progressAngle = (pct / 100) * Math.PI * 2;
+      if (progressAngle > 0.01) {
+        // Outer glow for progress arc
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + progressAngle);
+        ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, 0.15)`;
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
+        ctx.stroke();
+        // Main arc
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + progressAngle);
+        ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, 0.6)`;
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = "round";
+        ctx.stroke();
+      }
+
+      // Orbiting particles — always visible, brighter
+      for (let i = 0; i < NUM_PARTICLES; i++) {
+        const baseAngle = (i / NUM_PARTICLES) * Math.PI * 2;
+        const speed = 1.2 + (i % 3) * 0.4;
+        const angle = baseAngle + t * speed;
+        const wobble = Math.sin(t * 2.5 + i * 1.7) * 2;
+        const pr2 = r + wobble;
+        const x = cx + Math.cos(angle) * pr2;
+        const y = cy + Math.sin(angle) * pr2;
+
+        const particleSize = 1.4 + Math.sin(t * 3 + i) * 0.5;
+        const alpha = 0.55 + Math.sin(t * 2 + i * 0.9) * 0.3;
+
+        // Glow halo
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, particleSize * 4);
+        grad.addColorStop(0, `rgba(${pr}, ${pg}, ${pb}, ${alpha * 0.5})`);
+        grad.addColorStop(1, `rgba(${pr}, ${pg}, ${pb}, 0)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - particleSize * 4, y - particleSize * 4, particleSize * 8, particleSize * 8);
+
+        // Core dot
+        ctx.beginPath();
+        ctx.arc(x, y, particleSize, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${pr}, ${pg}, ${pb}, ${alpha * 0.85})`;
+        ctx.fill();
+      }
+
+      // Leading dot at progress tip — bright beacon
+      const leadAngle = -Math.PI / 2 + progressAngle;
+      const lx = cx + Math.cos(leadAngle) * r;
+      const ly = cy + Math.sin(leadAngle) * r;
+      const pulse = 0.7 + Math.sin(t * 5) * 0.3;
+      const leadGlow = ctx.createRadialGradient(lx, ly, 0, lx, ly, 6);
+      leadGlow.addColorStop(0, `rgba(${pr}, ${pg}, ${pb}, ${pulse})`);
+      leadGlow.addColorStop(0.4, `rgba(${pr}, ${pg}, ${pb}, 0.25)`);
+      leadGlow.addColorStop(1, `rgba(${pr}, ${pg}, ${pb}, 0)`);
+      ctx.fillStyle = leadGlow;
+      ctx.fillRect(lx - 6, ly - 6, 12, 12);
+      ctx.beginPath();
+      ctx.arc(lx, ly, 2, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${pr}, ${pg}, ${pb}, 0.95)`;
+      ctx.fill();
+
+      rafRef.current = requestAnimationFrame(draw);
+    };
+
+    rafRef.current = requestAnimationFrame(draw);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [hex, pct, size]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ width: size, height: size, position: "absolute", inset: 0 }}
+    />
+  );
+}
+
+/* Completion burst particles */
+function CompletionBurst({ hex, size = 36 }) {
+  const canvasRef = useRef(null);
+  const rafRef = useRef(null);
+  const startRef = useRef(Date.now());
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const s = size * 2; // double size for burst overflow
+    canvas.width = s * dpr;
+    canvas.height = s * dpr;
+    ctx.scale(dpr, dpr);
+
+    const cx = s / 2, cy = s / 2;
+    const hexToRgb = (h) => {
+      const n = parseInt(h.slice(1), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    };
+    const [pr, pg, pb] = hexToRgb(hex);
+
+    // Generate burst particles
+    const particles = Array.from({ length: 12 }, (_, i) => ({
+      angle: (i / 12) * Math.PI * 2 + (Math.random() - 0.5) * 0.3,
+      speed: 18 + Math.random() * 25,
+      size: 0.8 + Math.random() * 1.2,
+      decay: 0.85 + Math.random() * 0.1,
+    }));
+
+    const draw = () => {
+      const elapsed = (Date.now() - startRef.current) / 1000;
+      if (elapsed > 0.8) return; // stop after animation
+
+      ctx.clearRect(0, 0, s, s);
+
+      const progress = elapsed / 0.8; // 0 → 1
+      const ease = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+
+      for (const p of particles) {
+        const dist = p.speed * ease;
+        const x = cx + Math.cos(p.angle) * dist;
+        const y = cy + Math.sin(p.angle) * dist;
+        const alpha = Math.max(0, 1 - progress * 1.5) * 0.7;
+        const currentSize = p.size * (1 - progress * 0.5);
+
+        // Glow
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, currentSize * 4);
+        grad.addColorStop(0, `rgba(52, 199, 89, ${alpha * 0.4})`);
+        grad.addColorStop(1, `rgba(52, 199, 89, 0)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - currentSize * 4, y - currentSize * 4, currentSize * 8, currentSize * 8);
+
+        // Core
+        ctx.beginPath();
+        ctx.arc(x, y, currentSize, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(52, 199, 89, ${alpha})`;
+        ctx.fill();
+      }
+
+      // Center flash
+      if (progress < 0.3) {
+        const flashAlpha = (1 - progress / 0.3) * 0.3;
+        const flashGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 16);
+        flashGrad.addColorStop(0, `rgba(52, 199, 89, ${flashAlpha})`);
+        flashGrad.addColorStop(1, `rgba(52, 199, 89, 0)`);
+        ctx.fillStyle = flashGrad;
+        ctx.fillRect(cx - 16, cy - 16, 32, 32);
+      }
+
+      rafRef.current = requestAnimationFrame(draw);
+    };
+
+    rafRef.current = requestAnimationFrame(draw);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [hex, size]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        width: size * 2, height: size * 2,
+        position: "absolute",
+        top: -(size / 2), left: -(size / 2),
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+function ToolPill({ tool, input, result, isLoading, sources, serverPct, serverStage }) {
   const [open, setOpen] = useState(false);
-  const meta = TOOL_META[tool] || { icon: Wrench, label: tool, color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200" };
+  const [phase, setPhase] = useState("idle"); // idle | loading | completing | done
+  const meta = TOOL_META[tool] || { icon: Wrench, label: tool, color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", hex: "#9ca3af" };
   const Icon = meta.icon;
   const action = describeToolAction(tool, input);
   const detail = formatToolDetail(tool, input);
-  const canExpand = !isLoading;
+  const canExpand = !isLoading && phase !== "completing";
+  const estimatedPct = useToolProgress(isLoading, tool);
+  // Always use the higher of server-reported or estimated — estimated provides smooth animation floor
+  const rawPct = Math.max(estimatedPct, serverPct || 0);
+  const pct = useSmoothNumber(rawPct);
+  const stage = serverStage || "";
+  const [prevStage, setPrevStage] = useState("");
+
+  // Track stage transitions for animation
+  useEffect(() => {
+    if (stage && stage !== prevStage && stage !== "starting" && stage !== "cached") {
+      setPrevStage(stage);
+    }
+  }, [stage, prevStage]);
+
+  useEffect(() => {
+    if (isLoading) { setPhase("loading"); return; }
+    if (phase === "loading") {
+      setPhase("completing");
+      const t = setTimeout(() => setPhase("done"), 1000);
+      return () => clearTimeout(t);
+    }
+  }, [isLoading, phase]);
+
+  // Parse hex to rgba helper
+  const hexAlpha = (alpha) => {
+    const n = parseInt(meta.hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  };
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 4, scale: 0.97 }}
+      initial={{ opacity: 0, y: 12, scale: 0.88 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.25, ease: [0.25, 1, 0.5, 1] }}
+      transition={{ type: "spring", stiffness: 400, damping: 28, mass: 0.8 }}
       layout
-      className={`rounded-2xl overflow-hidden transition-all duration-300 backdrop-blur-xl ${
-        open ? "bg-black/[0.03] ring-1 ring-black/[0.08]" : "bg-black/[0.02] ring-1 ring-black/[0.05]"
-      }`}
     >
-      <motion.button
-        layout="position"
-        onClick={() => canExpand && setOpen(!open)}
-        className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left ${canExpand ? "cursor-pointer hover:bg-black/[0.02]" : "cursor-default"} transition-colors duration-200`}
+      <div
+        className="relative rounded-[16px] overflow-hidden"
+        style={{
+          transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)",
+          background: phase === "completing"
+            ? "rgba(240, 253, 244, 0.7)"
+            : isLoading
+            ? "rgba(255, 255, 255, 0.75)"
+            : open
+            ? "rgba(255, 255, 255, 0.55)"
+            : "rgba(255, 255, 255, 0.35)",
+          backdropFilter: "blur(24px) saturate(1.8)",
+          WebkitBackdropFilter: "blur(24px) saturate(1.8)",
+          boxShadow: phase === "completing"
+            ? `0 0 0 1px rgba(52, 199, 89, 0.25), 0 4px 24px -4px rgba(52, 199, 89, 0.12), 0 0 40px -8px rgba(52, 199, 89, 0.08)`
+            : isLoading
+            ? `0 0 0 1px ${hexAlpha(0.12)}, 0 4px 20px -4px ${hexAlpha(0.08)}, 0 0 32px -8px ${hexAlpha(0.05)}`
+            : open
+            ? "0 0 0 1px rgba(0,0,0,0.06), 0 2px 8px -2px rgba(0,0,0,0.04)"
+            : "0 0 0 1px rgba(0,0,0,0.04)",
+        }}
       >
-        <div className={`w-6 h-6 rounded-lg ${meta.bg} flex items-center justify-center shrink-0`}>
-          {isLoading ? <Loader2 className={`w-3.5 h-3.5 ${meta.color} animate-spin`} /> : <CheckCircle2 className={`w-3.5 h-3.5 ${meta.color}`} />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className={`text-[12px] font-medium ${isLoading ? meta.color : "text-black/50"} truncate leading-tight`}>
-            {isLoading ? action : (typeof result === "string" ? result : result ? JSON.stringify(result) : action)}
-          </p>
-          {isLoading && (
-            <motion.div className="mt-1.5" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
-              <div className="relative h-[2px] w-20 rounded-full bg-black/[0.04] overflow-hidden">
-                <motion.div className={`absolute inset-y-0 left-0 rounded-full ${meta.color.replace("text-", "bg-")} opacity-40`}
-                  animate={{ width: ["0%", "70%", "40%", "90%", "60%"] }}
-                  transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }} />
+        {/* Ambient glow pulse during loading */}
+        {isLoading && (
+          <div
+            className="absolute inset-0 pointer-events-none tool-glow-pulse"
+            style={{
+              background: `radial-gradient(ellipse 80% 60% at 20% 50%, ${hexAlpha(0.06)}, transparent 70%)`,
+            }}
+          />
+        )}
+
+        {/* Shimmer sweep during loading — refined glass effect */}
+        {isLoading && (
+          <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-[16px]">
+            <div className="tool-shimmer absolute inset-y-0 -left-full w-full"
+              style={{ background: `linear-gradient(90deg, transparent 0%, ${hexAlpha(0.07)} 35%, rgba(255,255,255,0.35) 50%, ${hexAlpha(0.07)} 65%, transparent 100%)` }}
+            />
+          </div>
+        )}
+
+        {/* Progress track — refined bottom bar with glow */}
+        {(isLoading || phase === "completing") && (
+          <div className="absolute bottom-0 left-0 right-0 h-[2px]" style={{ background: "rgba(0,0,0,0.02)" }}>
+            <motion.div
+              className="h-full rounded-full"
+              style={{
+                background: phase === "completing"
+                  ? "linear-gradient(90deg, rgba(52, 199, 89, 0.5), rgba(52, 199, 89, 0.8))"
+                  : `linear-gradient(90deg, ${hexAlpha(0.2)}, ${hexAlpha(0.5)})`,
+                boxShadow: phase === "completing"
+                  ? "0 0 8px rgba(52, 199, 89, 0.4)"
+                  : `0 0 6px ${hexAlpha(0.2)}`,
+              }}
+              initial={false}
+              animate={{ width: `${pct}%` }}
+              transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+            />
+          </div>
+        )}
+
+        <motion.button
+          layout="position"
+          onClick={() => canExpand && setOpen(!open)}
+          className={`relative w-full flex items-center gap-3 px-3.5 py-2.5 text-left ${
+            canExpand ? "cursor-pointer" : "cursor-default"
+          }`}
+          style={{ transition: "padding 0.3s ease" }}
+        >
+          {/* Icon container — orbital particles during loading */}
+          <div className="relative shrink-0 flex items-center justify-center" style={{ width: 36, height: 36 }}>
+            {isLoading ? (
+              <>
+                <OrbitalRing hex={meta.hex} pct={pct} size={36} />
+                <motion.div
+                  animate={{ scale: [1, 1.08, 1] }}
+                  transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                >
+                  <Icon className="relative z-10" style={{ width: 14, height: 14, color: meta.hex, opacity: 0.7 }} />
+                </motion.div>
+              </>
+            ) : phase === "completing" ? (
+              <>
+                <CompletionBurst hex={meta.hex} size={36} />
+                <motion.div
+                  initial={{ scale: 0, rotate: -180 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: "spring", stiffness: 400, damping: 20, mass: 0.6 }}
+                  className="relative z-10 flex items-center justify-center"
+                  style={{
+                    width: 36, height: 36, borderRadius: "50%",
+                    background: "rgba(52, 199, 89, 0.1)",
+                    boxShadow: "0 0 16px rgba(52, 199, 89, 0.15)",
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34c759" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <motion.path
+                      d="M4 12 L9 17 L20 6"
+                      initial={{ pathLength: 0, opacity: 0 }}
+                      animate={{ pathLength: 1, opacity: 1 }}
+                      transition={{ duration: 0.4, delay: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                    />
+                  </svg>
+                </motion.div>
+              </>
+            ) : (
+              <motion.div
+                className="flex items-center justify-center"
+                style={{
+                  width: 36, height: 36, borderRadius: "50%",
+                  background: `${meta.hex}10`,
+                  transition: "all 0.4s ease",
+                }}
+                whileHover={{ scale: 1.05, background: `${meta.hex}18` }}
+              >
+                <Icon style={{ width: 14, height: 14, color: meta.hex, opacity: 0.65 }} />
+              </motion.div>
+            )}
+          </div>
+
+          {/* Text content */}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <AnimatePresence mode="wait">
+                <motion.span
+                  key={isLoading ? (stage || "loading") : phase === "completing" ? "complete" : "done"}
+                  initial={{ opacity: 0, y: 6, filter: "blur(4px)" }}
+                  animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                  exit={{ opacity: 0, y: -6, filter: "blur(4px)" }}
+                  transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                  className="text-[12.5px] font-medium tracking-[-0.01em] truncate flex-1 min-w-0"
+                  style={{
+                    color: phase === "completing" ? "rgba(52, 199, 89, 0.8)"
+                      : isLoading ? "rgba(0,0,0,0.65)"
+                      : "rgba(0,0,0,0.42)",
+                  }}
+                >
+                  {isLoading
+                    ? (stage && stage !== "starting" && stage !== "cached" ? stage : meta.label)
+                    : phase === "completing"
+                    ? "Complete"
+                    : (typeof result === "string" ? result : meta.label)}
+                </motion.span>
+              </AnimatePresence>
+              {isLoading && (
+                <motion.span
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="text-[10px] font-mono tabular-nums shrink-0 tool-pct-counter"
+                  style={{ color: hexAlpha(0.5) }}
+                >
+                  {pct}<span style={{ opacity: 0.5, fontSize: 8 }}>%</span>
+                </motion.span>
+              )}
+            </div>
+            {/* Micro action description visible during loading */}
+            {isLoading && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                transition={{ duration: 0.3, delay: 0.1 }}
+              >
+                <span className="text-[10px] tracking-wide" style={{ color: "rgba(0,0,0,0.22)" }}>
+                  {action}
+                </span>
+              </motion.div>
+            )}
+          </div>
+
+          {canExpand && phase === "done" && (
+            <motion.div
+              animate={{ rotate: open ? 180 : 0 }}
+              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+            >
+              <ChevronDown style={{ width: 14, height: 14, color: "rgba(0,0,0,0.15)" }} />
+            </motion.div>
+          )}
+        </motion.button>
+
+        {/* Expanded details panel */}
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.3, ease: [0.25, 1, 0.5, 1] }}
+              className="overflow-hidden"
+            >
+              <div className="px-3.5 pb-3 pt-0.5">
+                <div className="ml-12 border-l pl-3 space-y-1.5" style={{ borderColor: "rgba(0,0,0,0.05)" }}>
+                  <div className="flex items-center gap-1.5">
+                    <span style={{ width: 5, height: 5, borderRadius: "50%", background: hexAlpha(0.4) }} />
+                    <span className="text-[10px] font-mono tracking-wide" style={{ color: "rgba(0,0,0,0.25)" }}>{detail.endpoint}</span>
+                  </div>
+                  {detail.params.map(([k, v], i) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, x: -8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.05, duration: 0.2 }}
+                      className="flex items-baseline gap-2 text-[10px]"
+                    >
+                      <span className="uppercase tracking-wider text-[9px] min-w-[36px]" style={{ color: "rgba(0,0,0,0.18)" }}>{k}</span>
+                      <span className="font-mono truncate" style={{ color: "rgba(0,0,0,0.38)" }}>{v}</span>
+                    </motion.div>
+                  ))}
+                  {sources && sources.length > 0 && (
+                    <div className="flex items-center gap-1.5 pt-1">
+                      {sources.map((s, si) => (
+                        <motion.span
+                          key={s}
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          transition={{ delay: si * 0.05 }}
+                          className="text-[9px] px-2 py-0.5 rounded-full font-medium"
+                          style={{
+                            background: "rgba(0,0,0,0.03)",
+                            color: "rgba(0,0,0,0.28)",
+                            boxShadow: "0 0 0 1px rgba(0,0,0,0.04)",
+                          }}
+                        >{s}</motion.span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}
-        </div>
-        {canExpand && (
-          <motion.div animate={{ rotate: open ? 180 : 0 }} transition={{ duration: 0.2 }}>
-            <ChevronDown className="w-3 h-3 text-black/20" />
-          </motion.div>
-        )}
-      </motion.button>
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }} className="overflow-hidden">
-            <div className="px-3.5 pb-3 pt-1 border-t border-black/[0.04]">
-              <div className="flex items-center gap-1.5 mb-2">
-                <div className="w-1 h-1 rounded-full bg-emerald-500/60" />
-                <span className="text-[10px] text-black/30 font-mono">{detail.endpoint}</span>
-              </div>
-              <div className="space-y-0.5">
-                {detail.params.map(([k, v], i) => (
-                  <div key={i} className="flex items-center gap-2 text-[10px]">
-                    <span className="text-black/20 min-w-[40px]">{k}</span>
-                    <span className="text-black/40 font-mono">{v}</span>
-                  </div>
-                ))}
-              </div>
-              {sources && sources.length > 0 && (
-                <div className="flex items-center gap-1.5 mt-2 pt-1.5 border-t border-black/[0.04]">
-                  <span className="text-[9px] text-black/15 uppercase tracking-wider">Data</span>
-                  {sources.map(s => <span key={s} className="text-[9px] px-1.5 py-0.5 rounded-md bg-black/[0.04] text-black/35 font-mono">{s}</span>)}
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+        </AnimatePresence>
+      </div>
     </motion.div>
   );
 }
@@ -611,11 +1077,19 @@ export default function Query() {
             });
           }
         },
-        onToolCall: ({ id, tool, input: ti }) => { tools.push({ id, tool, input: ti, result: null, isLoading: true }); setStreamTools([...tools]); },
+        onToolCall: ({ id, tool, input: ti }) => { tools.push({ id, tool, input: ti, result: null, isLoading: true, serverPct: 5, serverStage: "starting" }); setStreamTools([...tools]); },
+        onToolProgress: (data) => {
+          const tc = tools.find(t => (data.id ? t.id === data.id : t.tool === data.tool) && t.isLoading);
+          if (tc) {
+            tc.serverPct = data.pct;
+            tc.serverStage = data.stage || "";
+            setStreamTools([...tools]);
+          }
+        },
         onToolResult: (data) => {
           const tc = tools.find(t => (data.id ? t.id === data.id : t.tool === data.tool) && t.isLoading);
           if (tc) {
-            tc.result = data.summary; tc.isLoading = false; tc.sources = data.sources || []; tc.source_details = data.source_details || {};
+            tc.result = data.summary; tc.isLoading = false; tc.serverPct = 100; tc.sources = data.sources || []; tc.source_details = data.source_details || {};
             if (data.tool === "get_stock_prices" && data.stock_code) {
               tc.stock_code = data.stock_code; tc.live_price = data.live_price; tc.live_change_pct = data.live_change_pct;
               tc.market_state = data.market_state; tc.previous_close = data.previous_close; tc.price_history = data.price_history;
@@ -834,7 +1308,8 @@ export default function Query() {
           <div className="flex flex-wrap gap-2 mb-5">
             {msgTools.map((tc, i) => (
               <ToolPill key={tc.id || `${tc.tool}-${i}`} tool={tc.tool} input={tc.input} result={tc.result}
-                isLoading={streaming ? tc.isLoading : false} sources={tc.sources} />
+                isLoading={streaming ? tc.isLoading : false} sources={tc.sources}
+                serverPct={streaming ? tc.serverPct : null} serverStage={streaming ? tc.serverStage : null} />
             ))}
           </div>
         )}
@@ -927,7 +1402,7 @@ export default function Query() {
     <div className="h-dvh flex bg-[#f8f9fb] text-black overflow-hidden relative">
       {/* Interactive flow field background */}
       <div className="absolute inset-0 z-0">
-        <FlowFieldBackground paused={isStreaming} colorMode={speedMode} />
+        <FlowFieldBackground colorMode={speedMode} />
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden relative z-10">
@@ -1002,8 +1477,7 @@ export default function Query() {
         {hasMessages && (
           <>
             <div className="relative z-10 flex-1 overflow-hidden">
-              {/* Top fade */}
-              <div className="absolute top-0 left-0 right-0 h-8 bg-gradient-to-b from-[#f8f9fb] to-transparent z-10 pointer-events-none" />
+              {/* Top fade — transparent so background shows through */}
 
               <div ref={scrollRef} className="h-full overflow-y-auto query-scroll">
                 <div className="max-w-[720px] mx-auto px-6 pt-8 pb-8">
@@ -1031,8 +1505,7 @@ export default function Query() {
                 </div>
               </div>
 
-              {/* Bottom fade */}
-              <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#f8f9fb] to-transparent z-10 pointer-events-none" />
+              {/* Bottom fade — removed to prevent whitish overlay */}
 
               {/* Scroll to bottom */}
               <AnimatePresence>
@@ -1071,6 +1544,11 @@ export default function Query() {
         .query-scroll::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.12); }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
         .streaming-cursor { animation: blink 0.8s ease-in-out infinite; }
+        @keyframes shimmer { 0% { transform: translateX(0); } 100% { transform: translateX(200%); } }
+        .tool-shimmer { animation: shimmer 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+        @keyframes glowPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+        .tool-glow-pulse { animation: glowPulse 3s ease-in-out infinite; }
+        .tool-pct-counter { font-feature-settings: "tnum" 1; }
       `}</style>
     </div>
   );
