@@ -91,6 +91,11 @@ function lerpColor(a, b, t) {
 
 // Ease-out cubic for smooth deceleration
 function easeOutCubic(t) { return 1 - (1 - t) * (1 - t) * (1 - t); }
+// Smooth sinusoidal — organic contraction
+function easeSine(t) { return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+
+// Contracting wave duration
+const CONTRACT_DURATION = 1000;
 
 export default function FlowFieldBackground({ paused = false, colorMode = "blue" }) {
   const canvasRef = useRef(null);
@@ -198,17 +203,33 @@ export default function FlowFieldBackground({ paused = false, colorMode = "blue"
       let waveProgress = -1; // -1 means no active wave
       let waveRadius = 0;
       let waveCx = 0, waveCy = 0;
+      let isContracting = false;
+      let contractRadius = 0;
+      let contractProgress = 0;
+
       if (wave) {
         const elapsed = now - wave.t0;
-        const rawP = Math.min(elapsed / COLOR_WAVE_DURATION, 1);
-        waveProgress = easeOutCubic(rawP);
-        waveRadius = waveProgress * wave.maxRadius;
         waveCx = wave.cx;
         waveCy = wave.cy;
-        if (rawP >= 1) {
-          // Wave complete — settle into new color
-          st.settledColor = wave.toColor;
-          st.colorWave = null;
+
+        if (wave.contracting) {
+          // Gold contracts inward from edges to center
+          isContracting = true;
+          const rawP = Math.min(elapsed / CONTRACT_DURATION, 1);
+          contractProgress = easeSine(rawP);
+          contractRadius = wave.maxRadius * (1 - contractProgress);
+          if (rawP >= 1) {
+            st.settledColor = wave.toColor;
+            st.colorWave = null;
+          }
+        } else {
+          const rawP = Math.min(elapsed / COLOR_WAVE_DURATION, 1);
+          waveProgress = easeOutCubic(rawP);
+          waveRadius = waveProgress * wave.maxRadius;
+          if (rawP >= 1) {
+            st.settledColor = wave.toColor;
+            st.colorWave = null;
+          }
         }
       }
 
@@ -336,35 +357,48 @@ export default function FlowFieldBackground({ paused = false, colorMode = "blue"
           let pal = settled;
           let wavefrontGlow = 0;
 
-          if (wave && waveProgress >= 0) {
-            // Distance from this point to wave center
+          if (wave && isContracting) {
+            // ── Contracting wave (gold pulls inward to center) ──
             const wdx = x - waveCx;
             const wdy = y - waveCy;
             const wDist = Math.sqrt(wdx * wdx + wdy * wdy);
+            const inside = contractRadius - wDist;
 
-            // How far inside the wave radius is this point?
+            if (inside > COLOR_WAVE_BAND) {
+              pal = wave.fromColor; // Deep inside — still gold
+            } else if (inside > 0) {
+              const bandT = inside / COLOR_WAVE_BAND;
+              const smoothT = bandT * bandT * (3 - 2 * bandT);
+              pal = lerpColor(wave.toColor, wave.fromColor, smoothT);
+              const glowT = 1 - bandT;
+              wavefrontGlow = glowT * glowT * (1 - contractProgress * 0.3);
+            } else if (inside > -COLOR_WAVE_BAND * 0.5) {
+              const aheadT = 1 + inside / (COLOR_WAVE_BAND * 0.5);
+              wavefrontGlow = aheadT * aheadT * 0.25 * (1 - contractProgress);
+              pal = wave.toColor; // Outside ring — already blue
+            } else {
+              pal = wave.toColor; // Far outside — blue
+            }
+          } else if (wave && waveProgress >= 0) {
+            // ── Expanding color wave ──
+            const wdx = x - waveCx;
+            const wdy = y - waveCy;
+            const wDist = Math.sqrt(wdx * wdx + wdy * wdy);
             const inside = waveRadius - wDist;
 
             if (inside > COLOR_WAVE_BAND) {
-              // Fully inside the wave — use target color
               pal = wave.toColor;
             } else if (inside > 0) {
-              // In the wavefront band — blend + glow
               const bandT = inside / COLOR_WAVE_BAND;
-              // Smooth step for color blend
               const smoothT = bandT * bandT * (3 - 2 * bandT);
               pal = lerpColor(wave.fromColor, wave.toColor, smoothT);
-
-              // Wavefront glow: peaks at the edge, creating a bright ring
-              const glowT = 1 - bandT; // 1.0 at outer edge, 0.0 deep inside
-              wavefrontGlow = glowT * glowT * (1 - waveProgress * 0.3); // fades as wave completes
+              const glowT = 1 - bandT;
+              wavefrontGlow = glowT * glowT * (1 - waveProgress * 0.3);
             } else if (inside > -COLOR_WAVE_BAND * 0.4) {
-              // Just ahead of the wave — subtle anticipation glow
               const aheadT = 1 + inside / (COLOR_WAVE_BAND * 0.4);
               wavefrontGlow = aheadT * aheadT * 0.3 * (1 - waveProgress);
-              pal = settled; // keep old color
+              pal = settled;
             }
-            // else: fully outside the wave — keep settled color
           }
 
           // Apply wavefront effects
@@ -422,6 +456,7 @@ export default function FlowFieldBackground({ paused = false, colorMode = "blue"
 
     const fromColor = st.settledColor;
     const toColor = colorMode === "stream" ? ORANGE : BLUE;
+    const isReturnToBlue = prev === "stream" && colorMode !== "stream";
 
     // Wave emanates from center of canvas
     let cx = 0, cy = 0, maxRadius = 800;
@@ -429,7 +464,6 @@ export default function FlowFieldBackground({ paused = false, colorMode = "blue"
       const rect = canvas.getBoundingClientRect();
       cx = rect.width / 2;
       cy = rect.height / 2;
-      // Max radius = distance from center to furthest corner
       maxRadius = Math.sqrt(cx * cx + cy * cy) + COLOR_WAVE_BAND;
     }
 
@@ -440,6 +474,7 @@ export default function FlowFieldBackground({ paused = false, colorMode = "blue"
       cx,
       cy,
       maxRadius,
+      contracting: isReturnToBlue, // gold contracts inward when done streaming
     };
   }, [colorMode]);
 

@@ -342,8 +342,12 @@ def _compute_clean_kpi(financials_raw: Dict, prices_raw: Dict) -> Dict[str, Any]
         bps = _to_float_safe(latest.get("BPS")) or 0
     pbr = (current_price / bps) if bps > 0 else None
     per = (current_price / eps) if eps > 0 else None
-    # ROE: use annualised/forecast EPS for consistency with P/E
-    roe = (eps / bps) if (eps > 0 and bps > 0) else None
+    # ROE: use net_profit / equity (consistent with _compute_financial_kpis)
+    roe = (net_profit / equity) if (net_profit > 0 and equity > 0) else None
+    # Annualise interim ROE so it's comparable to full-year rates
+    if roe is not None and period_type != "FY":
+        annualise_roe = {"1Q": 4, "2Q": 2, "3Q": 4/3}.get(period_type, 1)
+        roe = roe * annualise_roe
     div_yield = (div_annual / current_price) if current_price > 0 else None
     equity_ratio = (equity / assets) if assets > 0 else None
 
@@ -3371,7 +3375,7 @@ def _fetch_peer_benchmarking(
     return {
         "peers": valid_peers[:8],
         "medians": medians,
-        "is_real": len(valid_peers) >= 2,
+        "is_real": len(valid_peers) >= 1,
     }
 
 
@@ -4651,25 +4655,30 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
     if name_jp_from_map:
         name_jp = name_jp_from_map
     else:
-        # Fallback to other sources if not in map
-        name_jp = _prefer_japanese_name(profile.get("company_name") or listed_info.get("CompanyName") or payload.get("company_name"))
-        # If name_jp still contains Japanese and was not from map, translate it
-        if name_jp and _contains_japanese(name_jp):
-            translated_jp = _translate_short_text(name_jp)
-            if translated_jp:
-                name_jp = translated_jp
+        # Fallback: prefer Japanese name from profile/listed_info, or EDINET filer_name
+        name_jp = _prefer_japanese_name(
+            profile.get("company_name") or listed_info.get("CompanyName") or payload.get("company_name")
+        )
+        # Also try EDINET filer_name which is usually in Japanese
+        edinet_filer = (payload.get("edinet_financials") or {}).get("filer_name")
+        if edinet_filer and _contains_japanese(edinet_filer):
+            name_jp = edinet_filer
+        # Keep Japanese name as-is — do NOT translate it
 
     if name_en_from_map:
         name_en = name_en_from_map
     else:
-        # Fallback to other sources if not in map
+        # Fallback: prefer explicit English name fields
         name_en = profile.get("company_name_en") or listed_info.get("CompanyNameEnglish")
-        # If name_en is empty but name_jp exists (and was not from map), use translated name_jp as fallback for English
-        if not name_en and name_jp and not name_jp_from_map:
-            name_en = _translate_short_text(name_jp) or name_jp # Translate name_jp to English for name_en
-        # If name_en still contains Japanese and was not from map, translate it
+        # If name_en is empty, translate name_jp to English as fallback
+        if not name_en and name_jp and _contains_japanese(name_jp):
+            name_en = _translate_short_text(name_jp) or name_jp
+        # If name_en still contains Japanese, translate it
         if name_en and _contains_japanese(name_en):
             name_en = _translate_short_text(name_en) or name_en
+        # If name_en is still empty, use the resolved company name or name_jp
+        if not name_en:
+            name_en = payload.get("company_name") or name_jp
 
     # Ensure resolved_company_name is consistent with the primary Japanese name
     metrics["company"]["name"] = name_jp # Use the determined Japanese name for primary company name in metrics
@@ -4984,17 +4993,14 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
         if not mix:
             return False
         total = _ownership_total(mix)
-        if total < 5:
+        if total < 3:
             return False
         # Total should not vastly exceed 100% (allow small rounding errors)
-        if total > 105:
+        if total > 110:
             return False
         non_none = {k: v for k, v in mix.items() if v is not None and v > 0}
-        # Any single category > 85% is extremely rare for TSE stocks
-        if any(v > 85 for v in non_none.values()):
-            return False
-        # Only one category with value > 60% is suspect
-        if len(non_none) == 1 and list(non_none.values())[0] > 60:
+        # Any single category > 95% is essentially impossible for TSE stocks
+        if any(v > 95 for v in non_none.values()):
             return False
         return True
 
@@ -5086,7 +5092,7 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
     # Post-pipeline: estimate individual remainder only when not already source-provided
     total = _ownership_total(ownership_mix)
     individual_current = ownership_mix.get("individual")
-    if 30 < total < 90 and (individual_current is None or individual_current == 0):
+    if 15 < total < 90 and (individual_current is None or individual_current == 0):
         estimated_individual = min(100 - total, 55)
         ownership_mix["individual"] = round(estimated_individual, 1)
 
@@ -5102,14 +5108,20 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
         "individual": ownership_mix.get("individual"),
     }
 
+    def _to_millions(v):
+        """Convert raw yen to millions for income statement display (¥MN)."""
+        if v is None:
+            return None
+        return round(v / 1_000_000, 0)
+
     income_statement = []
     for row in rows_sorted[-6:]:
         income_statement.append({
             "period": _format_period_label(row.get("period")),
-            "sales": row.get("revenue"),
-            "op_profit": row.get("operating_profit"),
-            "ord_profit": row.get("ordinary_profit"),
-            "net_income": row.get("net_income"),
+            "sales": _to_millions(row.get("revenue")),
+            "op_profit": _to_millions(row.get("operating_profit")),
+            "ord_profit": _to_millions(row.get("ordinary_profit")),
+            "net_income": _to_millions(row.get("net_income")),
             "eps": row.get("eps"),
             "dps": row.get("dps"),
         })

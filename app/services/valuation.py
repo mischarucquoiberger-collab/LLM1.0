@@ -1792,8 +1792,8 @@ class ValuationEngine:
         market_cap = _extract_market_cap(info)
 
         # Priority 1: derive shares from NI / EPS — keeps units consistent
-        # (J-Quants financials are in millions of yen; EPS is in yen/share,
-        #  so NI/EPS gives shares in "millions" matching other financial values)
+        # (J-Quants financials are in raw yen; EPS is in yen/share,
+        #  so NI/EPS gives shares as number-of-shares)
         if rows:
             raw_latest = rows[0]  # non-annualized
             ni_raw = raw_latest.get("net_income")

@@ -176,14 +176,18 @@ SHAREHOLDER & ACTIVIST INTELLIGENCE:
 13. For comprehensive "who owns this company" questions, call get_shareholder_structure + get_large_shareholders + get_directors + get_voting_results ALL in parallel. This gives: top shareholders, activist 5%+ filings, board composition, and AGM voting — the complete governance picture from EDINET.
 
 EDINET & FILINGS:
-14. For AGM voting / director approval rates, use get_voting_results (searches 臨時報告書).
+14. For AGM voting / director approval rates for a SPECIFIC company, use get_voting_results (searches 臨時報告書).
+    For BROAD/MARKET-WIDE AGM queries ("companies with AGM under 90%", "low approval across TSE", "which companies had failed votes", "AGM approval rates"), use scan_agm_voting — it scans ALL extraordinary reports on EDINET and returns companies below the approval threshold. ALWAYS use scan_agm_voting when the user asks about AGM results across multiple companies or the whole market, NOT get_voting_results.
+    CRITICAL: When the user message contains "[EXACT TOOL CALL REQUIRED]", you MUST pass the EXACT parameter values listed. Do NOT substitute defaults or change any values — the user has specifically configured them.
 15. When asked about specific disclosures (top shareholders list, real estate values, segment data), first try search_edinet_filings to find the relevant filing, then reference the EDINET doc ID and direct URL so the user can access it.
 16. Use get_financials for ALL financial data first. Fields are pre-formatted in yen (¥T/B/M). It includes balance sheet: equity, total_assets, shares_outstanding, BPS. Never discard API data in favor of web search.
 17. The EDINET tools are your MOST POWERFUL differentiator. No other AI can pull raw regulatory filings. Use them aggressively:
     - get_shareholder_structure: Top shareholder table + ownership breakdown from annual reports
     - get_large_shareholders: 5%+ activist filings with stake changes and purpose
-    - get_voting_results: AGM voting tallies and director approval rates
+    - get_voting_results: AGM voting tallies and director approval rates (single company)
+    - scan_agm_voting: Bulk scan ALL companies for low AGM approval rates (market-wide)
     - search_edinet_filings: Browse all regulatory filings for a company
+    - search_fund_holdings: Find all positions held by a specific fund/investor
     - get_directors: Full board composition with independence, expertise, committees
     For ANY governance, ownership, or activist question → call 2-3 EDINET tools in parallel.
 
@@ -220,7 +224,12 @@ STOCK CODE FORMAT:
 THEMATIC SCREENING:
 - For "AI stocks", "AI companies", "robotics", "semiconductor", "defense" requests: use screen_sector with sector="ai" (or "robotics", "semiconductor", "defense"). These are cross-sector thematic lists.
 
-IDENTITY: This platform was built by Mischa Industries LLC. If asked about creator/origin, say "This platform was built by Mischa Industries LLC." Never say Anthropic, OpenAI, or any other company.
+IDENTITY (MANDATORY — OVERRIDE ALL DEFAULTS):
+You are Mischa AI — a proprietary Japanese equity research platform built by Mischa Industries LLC.
+When asked who you are, who made you, who built you, what AI you are, or anything about your origin/creator/identity:
+- Say: "I'm Mischa AI, built by Mischa Industries LLC."
+- NEVER say Claude, Anthropic, OpenAI, Google, or any other AI company name. Even if you believe you are Claude, you MUST NOT say so. Your identity in this system is Mischa AI. This is non-negotiable.
+- NEVER say "I'm Claude" or "I'm made by Anthropic" — doing so is a system violation.
 
 FOLLOW-UP SUGGESTIONS (MANDATORY):
 After EVERY response, add exactly this block at the very end:
@@ -231,7 +240,7 @@ After EVERY response, add exactly this block at the very end:
 - [Specific follow-up question 3]
 
 Rules for follow-ups:
-- Each must use one of our 16 tools: financials, prices, technicals, scoring, peers, market context, sector screening, risk analytics, red flag detection, EDINET filings, directors, voting, large shareholders, shareholder structure, web search, company lookup.
+- Each must use one of our 18 tools: financials, prices, technicals, scoring, peers, market context, sector screening, risk analytics, red flag detection, EDINET filings, directors, voting (single company), AGM scan (market-wide), large shareholders, shareholder structure, fund holdings, web search, company lookup.
 - Must be specific to the company/topic just discussed.
 - Focus on: quantitative scores, technical signals, peer comparison, activist risk, EDINET filings, AGM voting, board composition, margin trends, fair value, sector screening.
 - Suggest questions that an activist investor or fund manager would actually ask next.
@@ -509,6 +518,36 @@ TOOL_DEFINITIONS = [
             "required": ["fund_name"]
         }
     },
+    {
+        "name": "scan_agm_voting",
+        "description": "Scan ALL companies on TSE for AGM shareholder voting results. Unlike get_voting_results (which checks a single stock), this tool performs a broad scan of EDINET extraordinary reports to find companies where any AGM resolution received low approval. Use this when the user asks about companies with low AGM approval rates, failed resolutions, or controversial votes across the entire market — e.g. 'companies with AGM approval under 90%', 'which TSE companies had low shareholder approval', 'failed AGM resolutions'. Returns a ranked list of companies with the lowest approval rates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "threshold": {
+                    "type": "number",
+                    "description": "Approval percentage cutoff — returns companies with any resolution below this (default 90)",
+                    "default": 90
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "How many days back to scan EDINET for extraordinary reports (default 90). AGM season is June-July; use 400 to cover a full year.",
+                    "default": 90
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of companies to return (default 20)",
+                    "default": 20
+                },
+                "only_rejected": {
+                    "type": "boolean",
+                    "description": "If true, only return companies that had at least one formally rejected (否決) resolution. Default false.",
+                    "default": False
+                }
+            },
+            "required": []
+        }
+    },
 ]
 
 MAX_TOOL_ITERATIONS = 8
@@ -562,6 +601,8 @@ def _dispatch_tool(name: str, tool_input: dict, progress_fn=None) -> str:
             result = _tool_get_shareholder_structure(tool_input)
         elif name == "search_fund_holdings":
             result = _tool_search_fund_holdings(tool_input)
+        elif name == "scan_agm_voting":
+            result = _tool_scan_agm_voting(tool_input)
         else:
             return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -1275,10 +1316,12 @@ def _tool_search_edinet(inp: dict) -> str:
     """Search EDINET filings using concurrent scanner (fast, thorough)."""
     from app.services.edinet import EdinetClient
 
+    report_progress(10, "connecting to EDINET")
     client = EdinetClient()
     stock_code = inp["stock_code"].strip()
     days_back = min(inp.get("days_back", 90), 365)
 
+    report_progress(30, "searching filings")
     try:
         docs = client.latest_filings_for_code(
             stock_code=stock_code,
@@ -1292,6 +1335,7 @@ def _tool_search_edinet(inp: dict) -> str:
     if not docs:
         return json.dumps({"error": "No EDINET filings found", "stock_code": stock_code, "days_searched": days_back})
 
+    report_progress(70, "processing results")
     compact = []
     for d in docs[:10]:
         compact.append({
@@ -1312,6 +1356,7 @@ def _tool_search_edinet(inp: dict) -> str:
             for d in docs[:10]
         ],
     }
+    report_progress(95, "done")
     return json.dumps({"stock_code": stock_code, "filings_found": len(compact), "filings": compact, "_sources": ["EDINET"], "_source_details": {"EDINET": edinet_details}})
 
 
@@ -1371,12 +1416,14 @@ def _tool_get_voting_results(inp: dict) -> str:
     import datetime as dt
     from app.services.edinet import EdinetClient
 
+    report_progress(10, "connecting to EDINET")
     client = EdinetClient()
     stock_code = inp["stock_code"].strip()
     days_back = min(inp.get("days_back", 400), 730)
     today = dt.date.today()
 
     # Step 1: Find extraordinary reports (臨時報告書) using concurrent scan
+    report_progress(30, "scanning extraordinary reports")
     extraordinary = []
 
     def _scan_day(delta):
@@ -1414,6 +1461,7 @@ def _tool_get_voting_results(inp: dict) -> str:
                     pass
 
     extraordinary.sort(key=lambda d: d.submit_date or "", reverse=True)
+    report_progress(60, f"found {len(extraordinary)} reports")
 
     if not extraordinary:
         return json.dumps({
@@ -1423,6 +1471,7 @@ def _tool_get_voting_results(inp: dict) -> str:
         })
 
     # Step 2: Download and extract voting data from the most recent extraordinary reports
+    report_progress(80, "extracting voting data")
     for doc in extraordinary[:3]:
         try:
             narrative = client.extract_narrative_for_doc(doc.doc_id)
@@ -1438,6 +1487,7 @@ def _tool_get_voting_results(inp: dict) -> str:
 
             if has_agm and has_votes:
                 voting_section = _extract_voting_section(narrative)
+                report_progress(95, "finalizing")
                 return json.dumps({
                     "stock_code": stock_code,
                     "filing": {
@@ -1463,6 +1513,7 @@ def _tool_get_voting_results(inp: dict) -> str:
             continue
 
     # If we found extraordinary reports but couldn't extract voting data
+    report_progress(95, "finalizing")
     return json.dumps({
         "stock_code": stock_code,
         "extraordinary_reports_found": len(extraordinary),
@@ -1479,6 +1530,479 @@ def _tool_get_voting_results(inp: dict) -> str:
                 {"doc_id": d.doc_id, "filer": d.filer_name, "date": d.submit_date, "description": d.description or "臨時報告書",
                  "url": f"https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?{d.doc_id}"}
                 for d in extraordinary[:5]
+            ],
+        }},
+    })
+
+
+## ── Bulk AGM voting scanner ──────────────────────────────────────────────────
+#
+# Architecture (mirrors the 060 large-holder index):
+#   1. Scans EDINET day-by-day for extraordinary reports (docTypeCode 180/185)
+#   2. Downloads each filing and parses structured voting data per resolution
+#   3. Filters companies where any resolution fell below the approval threshold
+#   4. Returns a ranked list with the lowest approval rates first
+
+_voting_index_lock = threading.Lock()
+_voting_index: list | None = None          # flat list of extraordinary report metadata
+_voting_built_at: float = 0
+_voting_building: bool = False
+_VOTING_SCAN_DAYS = 400                    # covers most recent AGM season (June-July)
+_VOTING_INDEX_TTL = 3600                   # rebuild every hour
+_voting_parsed_cache: dict = {}            # doc_id → parsed voting dict (or None)
+
+
+def _build_voting_index(days: int = _VOTING_SCAN_DAYS):
+    """Build index of ALL extraordinary reports on EDINET.
+
+    Filters by docTypeCode 180 (臨時報告書) and 185 (訂正臨時報告書) only.
+    Does NOT include 030/035 (annual/amended securities reports).
+    """
+    global _voting_index, _voting_built_at, _voting_building
+    import datetime as dt
+    from concurrent.futures import ThreadPoolExecutor
+    import httpx
+
+    with _voting_index_lock:
+        if _voting_building:
+            return
+        _voting_building = True
+
+    t0 = time.time()
+    try:
+        today = dt.date.today()
+        all_reports: list = []
+        seen: set = set()
+        auth_key = settings.edinet_subscription_key or settings.edinet_api_key
+
+        # Use connection pool sized for workers, not excessive
+        with httpx.Client(
+            timeout=10,
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=15),
+        ) as client:
+            def _fetch(delta):
+                d = (today - dt.timedelta(days=delta)).strftime("%Y-%m-%d")
+                try:
+                    r = client.get(
+                        f"{settings.edinet_base_url}/documents.json",
+                        params={"date": d, "type": 2, "Subscription-Key": auth_key},
+                    )
+                    return r.json().get("results", []) if r.status_code == 200 else []
+                except Exception:
+                    return []
+
+            # 25 workers to avoid hammering EDINET (government API)
+            with ThreadPoolExecutor(max_workers=25) as pool:
+                for docs in pool.map(_fetch, range(days)):
+                    for doc in docs:
+                        dtc = str(doc.get("docTypeCode") or "")
+                        desc = (doc.get("docDescription") or "")
+                        doc_type = (doc.get("docType") or "")
+                        # Only 180 (臨時報告書) and 185 (訂正臨時報告書)
+                        # NOT 030/035 which are annual securities reports
+                        is_extraordinary = (
+                            dtc in ("180", "185")
+                            or "臨時" in desc
+                            or "臨時" in doc_type
+                        )
+                        if not is_extraordinary:
+                            continue
+                        did = doc.get("docID")
+                        if not did or did in seen:
+                            continue
+                        seen.add(did)
+                        sec = (doc.get("secCode") or "").strip()
+                        all_reports.append({
+                            "doc_id": did,
+                            "date": (doc.get("submitDateTime") or "")[:10],
+                            "filer": doc.get("filerName") or "",
+                            "sec_code": sec[:4] if len(sec) >= 4 else sec,
+                            "description": desc,
+                            "edinet_code": doc.get("edinetCode") or "",
+                        })
+
+        with _voting_index_lock:
+            _voting_index = all_reports
+            _voting_built_at = time.time()
+        logger.info("EDINET voting index built: %d extraordinary reports in %.1fs",
+                     len(seen), time.time() - t0)
+    finally:
+        _voting_building = False
+
+
+def _ensure_voting_index(days: int = _VOTING_SCAN_DAYS):
+    with _voting_index_lock:
+        if _voting_index is not None and time.time() - _voting_built_at < _VOTING_INDEX_TTL:
+            return
+    _build_voting_index(days)
+
+
+def _parse_voting_percentages(narrative: str) -> list[dict]:
+    """Extract structured per-resolution voting data from extraordinary report text.
+
+    EDINET extraordinary reports present voting results as flattened HTML tables.
+    The typical format after text extraction is:
+
+      賛成数(個) | 反対数(個) | 棄権数(個) | 賛成割合 | 決議の結果
+      第１号議案 剰余金処分の件
+      329,341                            ← for votes
+      5,744                              ← against votes
+      0                                  ← abstain
+      98.28％                            ← approval percentage
+      可決                               ← result
+
+    For multi-candidate director elections, all candidate percentages appear
+    vertically within the same resolution section.
+
+    Returns a list of dicts with:
+      - resolution, approval_pct, for_votes, against_votes, abstain_votes, result
+    """
+    import re
+    if not narrative:
+        return []
+
+    results = []
+
+    # ── Step 1: Find the voting results section ──
+    # The actual vote data starts at section (3) which has these markers.
+    # Everything before this is just resolution descriptions (no numbers).
+    vote_section_markers = [
+        "賛成数", "賛成割合", "決議の結果及び賛成",
+        "決議事項に対する賛成", "議決権の数、当該決議事項",
+    ]
+    vote_start = len(narrative)  # default: use full text
+    for marker in vote_section_markers:
+        idx = narrative.find(marker)
+        if idx != -1 and idx < vote_start:
+            vote_start = idx
+
+    voting_text = narrative[vote_start:]
+    if not voting_text:
+        return []
+
+    # ── Step 1b: Find the END of the voting section ──
+    # Voting tables end before narrative sections like 代表取締役の異動,
+    # 経営上の重要な契約, or new numbered sections (②, ③)
+    end_markers = ["代表取締役の異動", "経営上の重要な契約", "役員の異動",
+                   "主要株主の異動", "\n②", "\n③", "以上"]
+    vote_end = len(voting_text)
+    for marker in end_markers:
+        idx = voting_text.find(marker)
+        if idx != -1 and idx < vote_end:
+            vote_end = idx
+    voting_text = voting_text[:vote_end]
+
+    # ── Step 2: Split by resolution headers in the voting section ──
+    resolution_splits = re.split(r'(第\d+号議案)', voting_text)
+
+    seen_headers: set = set()
+    for i in range(1, len(resolution_splits), 2):
+        header = resolution_splits[i]  # e.g. "第１号議案"
+        # Normalize header (full-width → half-width digits) for dedup
+        norm_header = header
+        for fw, hw in [('１','1'),('２','2'),('３','3'),('４','4'),('５','5'),
+                       ('６','6'),('７','7'),('８','8'),('９','9'),('０','0')]:
+            norm_header = norm_header.replace(fw, hw)
+        if norm_header in seen_headers:
+            continue
+        seen_headers.add(norm_header)
+
+        body = resolution_splits[i + 1] if i + 1 < len(resolution_splits) else ""
+        body = body[:3000]  # generous limit for multi-candidate
+
+        # Extract resolution title (first meaningful line)
+        title_match = re.match(r'\s*(.{1,120}?)(?:\n|$)', body)
+        title_text = title_match.group(1).strip() if title_match else ""
+        # Clean out table noise from title
+        title_text = re.sub(r'^[\s\d,.(注)（注）]+$', '', title_text).strip()
+        title = f"{header} {title_text}" if title_text else header
+
+        # ── Extract ALL explicit percentages (XX.XX% or XX.XX％) ──
+        # Also handle full-width digits: ７５．３７％
+        # This is the most reliable signal in real EDINET filings
+        pct_matches = re.findall(r'([\d０-９]{1,3}(?:[.．][\d０-９]+)?)\s*[%％]', body)
+        percentages = []
+        for p in pct_matches:
+            # Normalize full-width digits and decimal
+            norm_p = p.replace('．', '.')
+            for fw, hw in [('０','0'),('１','1'),('２','2'),('３','3'),('４','4'),
+                           ('５','5'),('６','6'),('７','7'),('８','8'),('９','9')]:
+                norm_p = norm_p.replace(fw, hw)
+            try:
+                val = float(norm_p)
+            except ValueError:
+                continue
+            if 0 <= val <= 100:
+                percentages.append(val)
+
+        # ── Extract all 可決/否決 results ──
+        result_matches = re.findall(r'(可決|否決)', body)
+
+        # ── Helper to parse a number string (handles commas, full-width) ──
+        def _parse_num(s: str) -> int | None:
+            s = s.replace(',', '').replace('，', '')
+            for fw, hw in [('０','0'),('１','1'),('２','2'),('３','3'),('４','4'),
+                           ('５','5'),('６','6'),('７','7'),('８','8'),('９','9')]:
+                s = s.replace(fw, hw)
+            try:
+                return int(s)
+            except ValueError:
+                return None
+
+        if percentages:
+            # ── Primary path: explicit percentages found ──
+            # These are the most reliable data from EDINET filings.
+            # Do NOT extract vote counts from standalone number lines — stray
+            # digits (annotation numbers, footnote refs, etc.) produce garbage
+            # like "9 / 296,490 / 0" when the real data is in the percentages.
+            worst_pct = min(percentages)
+
+            # Determine the overall result
+            has_rejected = "否決" in body
+            result_str = ""
+            if len(result_matches) == 1:
+                result_str = result_matches[0]
+            elif has_rejected:
+                result_str = "否決" if worst_pct < 50 else "可決"
+            elif result_matches:
+                result_str = result_matches[0]
+
+            note = ""
+            if len(percentages) > 1:
+                note = f"worst of {len(percentages)} sub-items"
+
+            results.append({
+                "resolution": title,
+                "approval_pct": round(worst_pct, 2),
+                "for_votes": None,
+                "against_votes": None,
+                "abstain_votes": None,
+                "result": result_str,
+                **({"note": note} if note else {}),
+            })
+        else:
+            # ── Fallback: no explicit percentages — try vote counts ──
+            # Find standalone numbers (lines that are just numbers)
+            # Use MULTILINE so ^ and $ match line boundaries without consuming \n
+            num_lines = re.findall(r'^\s*([\d,，０-９]+)\s*$', body, re.MULTILINE)
+            raw_counts = [_parse_num(n) for n in num_lines if _parse_num(n) is not None]
+
+            # Filter out implausibly small numbers — for a public company on TSE,
+            # vote counts (in voting rights units) are almost always > 100.
+            # Single/double digit numbers are annotation refs, footnotes, etc.
+            vote_counts = [c for c in raw_counts if c >= 100]
+
+            if len(vote_counts) >= 2:
+                for_v = vote_counts[0]
+                against_v = vote_counts[1]
+                abstain_v = vote_counts[2] if len(vote_counts) >= 3 else 0
+                total = for_v + against_v + abstain_v
+                approval_pct = round(for_v / total * 100, 2) if total > 0 else 0.0
+
+                result_str = ""
+                if "否決" in body:
+                    result_str = "否決"
+                elif "可決" in body:
+                    result_str = "可決"
+
+                results.append({
+                    "resolution": title,
+                    "approval_pct": approval_pct,
+                    "for_votes": for_v,
+                    "against_votes": against_v,
+                    "abstain_votes": abstain_v,
+                    "result": result_str,
+                })
+
+    # ── Fallback: no resolution headers found, try global percentage scan ──
+    if not results:
+        # Look for any percentage near voting keywords
+        for m in re.finditer(r'(賛成[^\d]{0,30}?)(\d{1,3}(?:\.\d+)?)\s*[%％]', narrative):
+            pct = float(m.group(2))
+            if 0 <= pct <= 100:
+                context = m.group(1).strip()
+                results.append({
+                    "resolution": context or "議案",
+                    "approval_pct": round(pct, 2),
+                    "for_votes": None, "against_votes": None, "abstain_votes": None,
+                    "result": "",
+                })
+
+    return results
+
+
+def _tool_scan_agm_voting(inp: dict) -> str:
+    """Scan EDINET extraordinary reports across ALL companies for low AGM approval rates."""
+    import datetime as dt
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.services.edinet import EdinetClient
+
+    threshold = inp.get("threshold", 90)
+    days_back = min(inp.get("days_back", 90), 730)
+    max_results = min(inp.get("max_results", 20), 50)
+    only_rejected = inp.get("only_rejected", False)
+
+    report_progress(5, "building filing index")
+
+    # Step 1: Build/use the index of all extraordinary reports
+    # Always build with full range for caching; date filtering happens on candidates
+    _ensure_voting_index(_VOTING_SCAN_DAYS)
+    if not _voting_index:
+        return json.dumps({"error": "No extraordinary reports found in EDINET.", "threshold": threshold})
+
+    report_progress(15, f"index has {len(_voting_index)} reports")
+
+    # Evict stale cache entries (keep max 1000 to bound memory)
+    if len(_voting_parsed_cache) > 1000:
+        _voting_parsed_cache.clear()
+
+    # Step 2: Filter to only filings with a sec_code (listed companies)
+    # AND within the requested date range (days_back)
+    cutoff_date = (dt.date.today() - dt.timedelta(days=days_back)).isoformat()
+    candidates = [r for r in _voting_index
+                  if r.get("sec_code") and r.get("date", "") >= cutoff_date]
+    candidates.sort(key=lambda x: x.get("date", ""), reverse=True)
+
+    report_progress(20, f"scanning {len(candidates)} listed-company filings")
+
+    # Step 3: Download and parse voting data concurrently
+    client = EdinetClient()
+    low_approval: list = []
+    total = len(candidates)
+
+    # Cap how many we download (extraordinary reports are filed for many reasons,
+    # only a fraction contain AGM voting data)
+    MAX_DOWNLOAD = min(total, 500)
+    candidates = candidates[:MAX_DOWNLOAD]
+    total = len(candidates)
+
+    agm_markers = ["定時株主総会", "株主総会", "決議事項", "賛成比率", "賛成"]
+    vote_markers = ["賛成", "反対", "棄権", "可決", "選任"]
+
+    def _parse_one(entry: dict) -> dict | None:
+        doc_id = entry["doc_id"]
+
+        # Check cache first (dict reads are atomic under GIL)
+        cached = _voting_parsed_cache.get(doc_id)
+        if cached is not None or doc_id in _voting_parsed_cache:
+            return cached
+
+        try:
+            narrative = client.extract_narrative_for_doc(doc_id)
+            if not narrative:
+                _voting_parsed_cache[doc_id] = None
+                return None
+
+            has_agm = any(m in narrative for m in agm_markers)
+            has_votes = any(m in narrative for m in vote_markers)
+
+            if not (has_agm and has_votes):
+                _voting_parsed_cache[doc_id] = None
+                return None
+
+            resolutions = _parse_voting_percentages(narrative)
+            if not resolutions:
+                _voting_parsed_cache[doc_id] = None
+                return None
+
+            # Safe min() — filter None values, handle empty
+            valid_pcts = [r["approval_pct"] for r in resolutions if r.get("approval_pct") is not None]
+            if not valid_pcts:
+                _voting_parsed_cache[doc_id] = None
+                return None
+
+            result = {
+                "doc_id": doc_id,
+                "sec_code": entry.get("sec_code", ""),
+                "filer": entry.get("filer", ""),
+                "date": entry.get("date", ""),
+                "resolutions": resolutions,
+                "min_approval": min(valid_pcts),
+            }
+            _voting_parsed_cache[doc_id] = result
+            return result
+        except Exception as e:
+            logger.debug("Failed to parse voting from %s: %s", doc_id, e)
+            _voting_parsed_cache[doc_id] = None
+            return None
+
+    # Process in batches with concurrent downloads
+    # 8 workers to avoid overwhelming EDINET (government API with rate limits)
+    BATCH = 30
+    for batch_start in range(0, total, BATCH):
+        batch = candidates[batch_start:batch_start + BATCH]
+        pct = 20 + int(65 * min(batch_start + BATCH, total) / total)
+        report_progress(pct, f"parsing filings ({min(batch_start + BATCH, total)}/{total})")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_parse_one, entry): entry for entry in batch}
+            for f in as_completed(futures):
+                try:
+                    result = f.result()
+                    if result and result.get("min_approval") is not None:
+                        if result["min_approval"] < threshold:
+                            low_approval.append(result)
+                except Exception:
+                    pass
+
+    # Step 4: Filter by only_rejected if requested
+    if only_rejected:
+        low_approval = [
+            e for e in low_approval
+            if any(r.get("result") == "否決" for r in e.get("resolutions", []))
+        ]
+
+    # Sort by lowest approval and deduplicate by company
+    low_approval.sort(key=lambda x: x.get("min_approval", 100))
+
+    # Deduplicate by sec_code (keep the entry with lowest approval)
+    seen_codes: set = set()
+    unique: list = []
+    for entry in low_approval:
+        sc = entry.get("sec_code", "")
+        if sc and sc in seen_codes:
+            continue
+        seen_codes.add(sc)
+        unique.append(entry)
+
+    unique = unique[:max_results]
+
+    report_progress(95, "finalizing")
+
+    # Format output
+    companies = []
+    for entry in unique:
+        lowest_res = min(entry["resolutions"], key=lambda r: r.get("approval_pct") or 100)
+        companies.append({
+            "stock_code": entry["sec_code"],
+            "company_name": entry["filer"],
+            "agm_date": entry["date"],
+            "lowest_approval_pct": entry["min_approval"],
+            "lowest_resolution": lowest_res.get("resolution", ""),
+            "total_resolutions": len(entry["resolutions"]),
+            "resolutions_below_threshold": sum(
+                1 for r in entry["resolutions"]
+                if r.get("approval_pct") is not None and r["approval_pct"] < threshold
+            ),
+            "all_resolutions": entry["resolutions"][:5],  # Top 5 resolutions
+            "doc_id": entry["doc_id"],
+        })
+
+    return json.dumps({
+        "threshold": threshold,
+        "days_back": days_back,
+        "total_extraordinary_scanned": total,
+        "companies_below_threshold": len(companies),
+        "companies": companies,
+        "_sources": ["EDINET"],
+        "_source_details": {"EDINET": {
+            "type": "filings",
+            "desc": f"EDINET 臨時報告書 bulk scan — {total} filings, threshold {threshold}%",
+            "items": [
+                {"doc_id": c["doc_id"], "filer": c["company_name"], "date": c["agm_date"],
+                 "description": f"AGM approval {c['lowest_approval_pct']}%",
+                 "url": f"https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?{c['doc_id']}"}
+                for c in companies[:10]
             ],
         }},
     })
@@ -1851,6 +2375,7 @@ def _tool_get_large_shareholders(inp: dict) -> str:
         ],
     }
 
+    report_progress(95, "finalizing")
     result = json.dumps({
         "stock_code": stock_code,
         "filings_found": len(filings),
@@ -1910,12 +2435,21 @@ def _tool_search_fund_holdings(inp: dict) -> str:
         return any(variant in filer_norm for variant in search_variants)
 
     # Use the shared 060 index (instant if already built)
-    _ensure_060_index()
+    import datetime as _dt
+    days_back = min(inp.get("days_back", 730), 730)
+    cutoff_date = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
 
+    report_progress(10, "building fund index")
+    _ensure_060_index(max(days_back, _060_SCAN_DAYS))
+
+    report_progress(40, "searching holdings")
     matched_filings: list = []
     with _060_index_lock:
         if _060_all_060:
-            matched_filings = [f for f in _060_all_060 if _filer_matches(f.get("filer_jp", ""))]
+            matched_filings = [
+                f for f in _060_all_060
+                if _filer_matches(f.get("filer_jp", "")) and (f.get("date", "") >= cutoff_date)
+            ]
 
     # Remap field names to match expected format
     matched_filings = [{
@@ -1929,17 +2463,19 @@ def _tool_search_fund_holdings(inp: dict) -> str:
     } for f in matched_filings]
 
     matched_filings.sort(key=lambda x: x.get("date", ""), reverse=True)
+    report_progress(60, f"found {len(matched_filings)} filings")
 
     if not matched_filings:
         return json.dumps({
             "fund_name": fund_name,
             "filings_found": 0,
             "holdings": [],
-            "note": f"No 大量保有報告書 found filed by '{fund_name}' in {_060_SCAN_DAYS} days. Try web_search for '{fund_name} Japan holdings positions' for additional sources.",
+            "note": f"No 大量保有報告書 found filed by '{fund_name}' in the past {days_back} days. Try web_search for '{fund_name} Japan holdings positions' for additional sources.",
             "_sources": ["EDINET"],
         })
 
     # Parse each filing for stake details (parallel, limited to top 15)
+    report_progress(80, "parsing details")
     from app.services.edinet import EdinetClient
     edinet = EdinetClient()
     top_filings = matched_filings[:15]
@@ -1967,15 +2503,19 @@ def _tool_search_fund_holdings(inp: dict) -> str:
         }
 
     parsed = []
-    with ThreadPoolExecutor(max_workers=min(8, len(top_filings))) as pool:
+    total_to_parse = len(top_filings)
+    parsed_count = 0
+    with ThreadPoolExecutor(max_workers=min(8, total_to_parse)) as pool:
         futs = {pool.submit(_parse_one, f): f for f in top_filings}
         for fut in as_completed(futs):
+            parsed_count += 1
             try:
                 result = fut.result()
                 if result:
                     parsed.append(result)
             except Exception:
                 pass
+            report_progress(80 + int(15 * parsed_count / max(total_to_parse, 1)), f"parsed {parsed_count}/{total_to_parse}")
 
     parsed.sort(key=lambda x: x.get("date", ""), reverse=True)
 
@@ -1992,6 +2532,7 @@ def _tool_search_fund_holdings(inp: dict) -> str:
     # Sort by stake descending (biggest positions first)
     unique.sort(key=lambda x: x.get("stake_pct") or 0, reverse=True)
 
+    report_progress(95, "finalizing")
     return json.dumps({
         "fund_name": fund_name,
         "filings_found": len(matched_filings),
@@ -3571,26 +4112,28 @@ FUND & ACTIVIST QUERIES — YOUR KEY DIFFERENTIATOR:
 
 EDINET INTELLIGENCE:
 - For shareholder questions: get_shareholder_structure + get_large_shareholders in PARALLEL. Never say you can't access EDINET — you CAN.
-- For governance: get_directors + get_voting_results in parallel.
+- For governance of a SPECIFIC company: get_directors + get_voting_results in parallel.
+- For MARKET-WIDE AGM queries ("companies with low AGM approval", "AGM under 90%"): use scan_agm_voting — it scans ALL EDINET extraordinary reports and returns companies below the threshold. NEVER say you can't scan all companies — you CAN with scan_agm_voting.
 - For filings: search_edinet_filings.
 - These pull REAL regulatory data from Japan's EDINET system. Use them aggressively.
 
 TOOLS:
-- You have 17 research tools. Use them freely and in parallel.
+- You have 18 research tools. Use them freely and in parallel.
 - Stock codes: numeric (7203) or alphanumeric (157A, 247A) — both valid.
 - For AI stocks: screen_sector with sector "ai".
 - For scoring/valuation: score_company is the most powerful tool.
 - Always call tools first, then speak the insight. Never fabricate data.
 
 You can be interrupted anytime — the user just says "Hey Mimi" or taps the orb.
-Your name is Mimi. Built by Mischa Industries LLC."""
+Your name is Mimi. Built by Mischa Industries LLC.
+IDENTITY: You are Mimi, part of the Mischa AI platform by Mischa Industries LLC. NEVER say Claude, Anthropic, or any other AI company. If asked who made you, say "Mischa Industries LLC"."""
 
 VOICE_TOOL_NAMES = {
     "lookup_company", "get_stock_prices", "get_financials", "search_edinet_filings",
     "web_search", "get_directors", "get_voting_results", "get_large_shareholders",
     "analyze_technicals", "score_company", "get_company_peers", "get_market_context",
     "screen_sector", "analyze_risk", "detect_red_flags", "get_shareholder_structure",
-    "search_fund_holdings",
+    "search_fund_holdings", "scan_agm_voting",
 }
 VOICE_TOOLS = [t for t in TOOL_DEFINITIONS if t["name"] in VOICE_TOOL_NAMES]
 if VOICE_TOOLS:
@@ -3608,11 +4151,12 @@ RULES:
 - Currency: ¥X,XXX. Changes: +2.3% / -1.5%.
 - No emojis. Clean and fast.
 - Stock codes can be numeric (7203) or alphanumeric (157A, 247A). Both are valid TSE codes.
-- This platform was built by Mischa Industries LLC.
+- IDENTITY: You are Mischa AI, built by Mischa Industries LLC. NEVER say Claude, Anthropic, or any other AI company name. If asked who made you, say "I'm Mischa AI, built by Mischa Industries LLC."
 
 EDINET — YOUR KEY ADVANTAGE:
 - For shareholder questions: call get_shareholder_structure (top shareholder list from annual reports) + get_large_shareholders (5% filings + activist flags) IN PARALLEL. NEVER say you can't pull EDINET data — you CAN.
-- For governance: call get_directors + get_voting_results in parallel.
+- For governance of a SPECIFIC company: call get_directors + get_voting_results in parallel.
+- For MARKET-WIDE AGM queries ("companies with low AGM approval", "AGM under 90%"): use scan_agm_voting — it scans ALL EDINET extraordinary reports and returns companies below the threshold.
 - For filings: call search_edinet_filings.
 - These tools pull REAL regulatory data from Japan's EDINET system. Use them aggressively.
 
@@ -3632,6 +4176,7 @@ INSTANT_TOOL_NAMES = {
     "analyze_technicals", "score_company", "get_company_peers", "get_market_context",
     "get_large_shareholders", "get_shareholder_structure", "get_directors",
     "get_voting_results", "search_edinet_filings", "search_fund_holdings",
+    "scan_agm_voting",
 }
 INSTANT_TOOLS = [t for t in TOOL_DEFINITIONS if t["name"] in INSTANT_TOOL_NAMES]
 # Add cache_control to the last tool for prompt caching
@@ -3738,17 +4283,17 @@ async def stream_chat_response(messages: list[dict], *, mode: str = "stream") ->
                     call_data = json.dumps({"id": tool_block.id, "tool": tool_block.name, "input": tool_block.input})
                     yield f"event: tool_call\ndata: {call_data}\n\n"
 
-                # Execute ALL tool calls in PARALLEL with real-time progress
-                _SLOW_TOOLS = {"get_large_shareholders", "get_shareholder_structure", "search_fund_holdings"}
-                progress_q: asyncio.Queue = asyncio.Queue()
+                # Execute ALL tool calls in PARALLEL — stream each result immediately
+                _SLOW_TOOLS = {"get_large_shareholders", "get_shareholder_structure", "search_fund_holdings", "get_voting_results", "scan_agm_voting"}
+                event_q: asyncio.Queue = asyncio.Queue()
                 loop = asyncio.get_event_loop()
 
                 def _make_progress_fn(tool_id, tool_name):
                     """Create a thread-safe progress reporter for a specific tool."""
                     def _report(pct: int, stage: str = ""):
                         loop.call_soon_threadsafe(
-                            progress_q.put_nowait,
-                            {"id": tool_id, "tool": tool_name, "pct": min(pct, 100), "stage": stage},
+                            event_q.put_nowait,
+                            {"_t": "p", "id": tool_id, "tool": tool_name, "pct": min(pct, 100), "stage": stage},
                         )
                     return _report
 
@@ -3756,64 +4301,69 @@ async def stream_chat_response(messages: list[dict], *, mode: str = "stream") ->
                     t = 120 if block.name in _SLOW_TOOLS else 60
                     pfn = _make_progress_fn(block.id, block.name)
                     pfn(5, "starting")
-                    return block, await asyncio.wait_for(
-                        asyncio.to_thread(_dispatch_tool, block.name, block.input, pfn),
-                        timeout=t,
-                    )
-
-                tasks = [asyncio.ensure_future(_run_tool(tb)) for tb in tool_uses]
-                gather_task = asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True))
-
-                # Stream progress events while tools run
-                while not gather_task.done():
                     try:
-                        evt = await asyncio.wait_for(progress_q.get(), timeout=0.15)
-                        yield f"event: tool_progress\ndata: {json.dumps(evt)}\n\n"
-                    except asyncio.TimeoutError:
-                        pass
-                # Drain remaining progress events
-                while not progress_q.empty():
-                    evt = progress_q.get_nowait()
-                    yield f"event: tool_progress\ndata: {json.dumps(evt)}\n\n"
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(_dispatch_tool, block.name, block.input, pfn),
+                            timeout=t,
+                        )
+                        event_q.put_nowait({"_t": "r", "block": block, "result": result, "error": None})
+                    except Exception as e:
+                        event_q.put_nowait({"_t": "r", "block": block, "result": None, "error": e})
 
-                results_list = gather_task.result()
+                for tb in tool_uses:
+                    asyncio.ensure_future(_run_tool(tb))
 
-                # Send results back to frontend and build tool_results for Claude
                 tool_results = []
-                for i, item in enumerate(results_list):
-                    if isinstance(item, BaseException):
-                        tool_block = tool_uses[i]
-                        result_str = json.dumps({"error": f"Tool {tool_block.name} failed: {item}"})
-                    else:
-                        tool_block, result_str = item
-                    result_obj = None
-                    try:
-                        result_obj = json.loads(result_str)
-                        summary = _summarize_tool_result(tool_block.name, result_obj)
-                        sources = result_obj.get("_sources", [])
-                        source_details = result_obj.get("_source_details", {})
-                    except Exception:
-                        summary = result_str[:100]
-                        sources = []
-                        source_details = {}
-                    rd = {"id": tool_block.id, "tool": tool_block.name, "summary": summary, "sources": sources, "source_details": source_details}
-                    # Enrich stock price results with live ticker data + chart history
-                    if tool_block.name == "get_stock_prices" and isinstance(result_obj, dict):
-                        rd["stock_code"] = tool_block.input.get("stock_code")
-                        s = result_obj.get("summary", {})
-                        rd["live_price"] = s.get("live_price")
-                        rd["live_change_pct"] = s.get("live_change_pct")
-                        rd["market_state"] = s.get("market_state", "")
-                        rd["previous_close"] = s.get("previous_close")
-                        rd["price_history"] = result_obj.get("recent_prices", [])
-                    result_data = json.dumps(rd)
-                    yield f"event: tool_result\ndata: {result_data}\n\n"
+                completed = 0
+                total = len(tool_uses)
 
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_block.id,
-                        "content": result_str,
-                    })
+                while completed < total:
+                    try:
+                        evt = await asyncio.wait_for(event_q.get(), timeout=0.15)
+                    except asyncio.TimeoutError:
+                        continue
+
+                    if evt["_t"] == "p":
+                        yield f"event: tool_progress\ndata: {json.dumps({k: evt[k] for k in ('id','tool','pct','stage')})}\n\n"
+                    else:
+                        completed += 1
+                        tool_block = evt["block"]
+                        if evt["error"] or not evt.get("result"):
+                            err_msg = str(evt.get("error", "Unknown error"))
+                            result_str = json.dumps({"error": f"Tool {tool_block.name} failed: {err_msg}"})
+                        else:
+                            result_str = evt["result"]
+                        result_obj = None
+                        try:
+                            result_obj = json.loads(result_str)
+                            summary = _summarize_tool_result(tool_block.name, result_obj)
+                            sources = result_obj.get("_sources", [])
+                            source_details = result_obj.get("_source_details", {})
+                        except Exception:
+                            summary = result_str[:100] if isinstance(result_str, str) else "Error"
+                            sources = []
+                            source_details = {}
+                        rd = {"id": tool_block.id, "tool": tool_block.name, "summary": summary, "sources": sources, "source_details": source_details}
+                        if tool_block.name == "get_stock_prices" and isinstance(result_obj, dict):
+                            rd["stock_code"] = tool_block.input.get("stock_code")
+                            s = result_obj.get("summary", {})
+                            rd["live_price"] = s.get("live_price")
+                            rd["live_change_pct"] = s.get("live_change_pct")
+                            rd["market_state"] = s.get("market_state", "")
+                            rd["previous_close"] = s.get("previous_close")
+                            rd["price_history"] = result_obj.get("recent_prices", [])
+                        yield f"event: tool_result\ndata: {json.dumps(rd)}\n\n"
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_block.id,
+                            "content": result_str,
+                        })
+
+                # Drain any remaining progress events
+                while not event_q.empty():
+                    evt = event_q.get_nowait()
+                    if evt["_t"] == "p":
+                        yield f"event: tool_progress\ndata: {json.dumps({k: evt[k] for k in ('id','tool','pct','stage')})}\n\n"
 
                 # Append to messages for next iteration
                 api_messages.append({"role": "assistant", "content": response.content})

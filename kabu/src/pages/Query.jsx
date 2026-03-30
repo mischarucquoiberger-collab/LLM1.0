@@ -4,7 +4,8 @@ import {
   ArrowLeft, ArrowUp, ArrowDown, Loader2, Search, TrendingUp, FileText, Users,
   Globe, Wrench, ChevronDown, CheckCircle2, Plus, X, Square,
   Activity, BarChart3, Layers, Shield, AlertTriangle, Zap, Clock,
-  Mic, MicOff, Copy, Check, Target,
+  Mic, MicOff, Copy, Check, Target, SlidersHorizontal, Calendar,
+  Building2, Vote, Filter, Percent,
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { streamChat } from "@/api/backend";
@@ -59,6 +60,8 @@ const TOOL_META = {
   analyze_risk:          { icon: Shield,       label: "Risk analytics",      color: "text-orange-400",  bg: "bg-orange-500/10",  hex: "#fb923c" },
   detect_red_flags:      { icon: AlertTriangle, label: "Red flag detection", color: "text-red-400",     bg: "bg-red-500/10",     hex: "#f87171" },
   get_shareholder_structure: { icon: Users,    label: "Shareholder structure", color: "text-sky-400",  bg: "bg-sky-500/10",     hex: "#38bdf8" },
+  scan_agm_voting:           { icon: Vote,     label: "AGM voting scan",       color: "text-amber-400", bg: "bg-amber-500/10",   hex: "#f59e0b" },
+  search_fund_holdings:      { icon: Target,   label: "Fund holdings",         color: "text-rose-400",  bg: "bg-rose-500/10",    hex: "#fb7185" },
 };
 
 /* ── Tool helpers ─────────────────────────────────────────── */
@@ -82,6 +85,8 @@ function describeToolAction(tool, input) {
     case "analyze_risk": return `Risk analytics for ${code}`;
     case "detect_red_flags": return `Forensic accounting scan for ${code}`;
     case "get_shareholder_structure": return `Shareholder structure from annual report for ${code}`;
+    case "scan_agm_voting": return `Scanning ${input?.days_back || 400} days of AGM filings — threshold ${input?.threshold || 90}%`;
+    case "search_fund_holdings": return `Searching fund holdings for "${input?.fund_name || ""}"`;
     default: return tool;
   }
 }
@@ -105,6 +110,8 @@ function formatToolDetail(tool, input) {
     case "analyze_risk": return { params: [["Code", code]], endpoint: "Vol + Beta + Sharpe + VaR" };
     case "detect_red_flags": return { params: [["Code", code]], endpoint: "Z-Score + Accruals + Beneish" };
     case "get_shareholder_structure": return { params: [["Code", code]], endpoint: "EDINET 有価証券報告書" };
+    case "scan_agm_voting": return { params: [["Threshold", `<${input?.threshold || 90}%`], ["Period", `${input?.days_back || 400} days`], ["Max", `${input?.max_results || 20}`]], endpoint: "EDINET 臨時報告書" };
+    case "search_fund_holdings": return { params: [["Fund", input?.fund_name || ""]], endpoint: "EDINET 大量保有報告書" };
     default: return { params: Object.entries(input || {}), endpoint: tool };
   }
 }
@@ -137,11 +144,12 @@ function getQuickActions(tools) {
 
 /* Tool-specific expected durations (seconds) for fallback progress */
 const TOOL_SPEED = {
-  lookup_company: 1.5, get_stock_prices: 3, get_financials: 4, web_search: 3,
-  get_directors: 8, get_voting_results: 8, get_large_shareholders: 10,
-  get_shareholder_structure: 12, search_edinet_filings: 6, analyze_technicals: 4,
-  score_company: 5, get_company_peers: 3, get_market_context: 3, screen_sector: 8,
-  analyze_risk: 5, detect_red_flags: 5, search_fund_holdings: 10,
+  lookup_company: 2, get_stock_prices: 4, get_financials: 5, web_search: 4,
+  get_directors: 12, get_voting_results: 12, get_large_shareholders: 15,
+  get_shareholder_structure: 18, search_edinet_filings: 10, analyze_technicals: 5,
+  score_company: 7, get_company_peers: 4, get_market_context: 4, screen_sector: 12,
+  analyze_risk: 6, detect_red_flags: 6, search_fund_holdings: 15,
+  scan_agm_voting: 25,
 };
 
 function useToolProgress(active, tool) {
@@ -154,7 +162,9 @@ function useToolProgress(active, tool) {
       const k = TOOL_SPEED[tool] || 5;
       const tick = () => {
         const t = (Date.now() - startRef.current) / 1000 / k;
-        const v = t < 0.3 ? (t / 0.3) * 60 : t < 0.7 ? 60 + ((t - 0.3) / 0.4) * 25 : 85 + 10 * (1 - Math.exp(-(t - 0.7) * 1.5));
+        // Smooth exponential: steady rise, never feels frozen
+        // ~16% at 0.5s, ~49% at 2s, ~63% at 3s, ~79% at 5s, ~93% at 10s (with k=5)
+        const v = 95 * (1 - Math.exp(-t * 1.6));
         setPct(Math.min(Math.round(v), 95));
         rafRef.current = requestAnimationFrame(tick);
       };
@@ -217,6 +227,8 @@ function ToolPill({ tool, input, result, isLoading, sources, serverPct, serverSt
   // SVG ring constants (r=11, circumference)
   const R = 11, CIRC = 2 * Math.PI * R;
   const dashOffset = CIRC - (pct / 100) * CIRC;
+  const lastDashRef = useRef(dashOffset);
+  if (isLoading) lastDashRef.current = dashOffset; // capture last loading offset
 
   useEffect(() => {
     if (isLoading) { setPhase("loading"); return; }
@@ -232,8 +244,12 @@ function ToolPill({ tool, input, result, isLoading, sources, serverPct, serverSt
   return (
     <motion.div
       initial={{ opacity: 0, y: 6, scale: 0.95 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ type: "spring", stiffness: 500, damping: 30 }}
+      animate={phase === "completing"
+        ? { opacity: 1, y: 0, scale: [1, 1.025, 1] }
+        : { opacity: 1, y: 0, scale: 1 }}
+      transition={phase === "completing"
+        ? { scale: { duration: 0.5, delay: 0.3, ease: [0.16, 1, 0.3, 1] }, default: { type: "spring", stiffness: 500, damping: 30 } }
+        : { type: "spring", stiffness: 500, damping: 30 }}
       layout
       className="tool-pill-root"
     >
@@ -334,23 +350,51 @@ function ToolPill({ tool, input, result, isLoading, sources, serverPct, serverSt
                 </div>
               </>
             ) : phase === "completing" ? (
-              <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ type: "spring", stiffness: 500, damping: 22 }}
-                style={{
-                  width: 28, height: 28, borderRadius: "50%",
-                  background: "rgba(52, 199, 89, 0.08)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-                  stroke="#34c759" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <motion.path d="M4 12 L9 17 L20 6"
-                    initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
-                    transition={{ duration: 0.35, delay: 0.1, ease: [0.16, 1, 0.3, 1] }} />
+              <>
+                {/* Success ring — fills to 100% and transitions to green */}
+                <svg width="28" height="28" viewBox="0 0 28 28" style={{ position: "absolute", inset: 0 }}>
+                  <circle cx="14" cy="14" r={R} fill="none"
+                    stroke="rgba(52,199,89,0.08)" strokeWidth="2" />
+                  <motion.circle cx="14" cy="14" r={R} fill="none"
+                    strokeWidth="2" strokeLinecap="round"
+                    initial={{ strokeDashoffset: lastDashRef.current, stroke: hexRgba(hex, 0.55) }}
+                    animate={{ strokeDashoffset: 0, stroke: "rgba(52,199,89,0.45)" }}
+                    transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                    style={{
+                      strokeDasharray: CIRC,
+                      transform: "rotate(-90deg)",
+                      transformOrigin: "center",
+                    }}
+                  />
                 </svg>
-              </motion.div>
+                {/* Success ripple */}
+                <motion.div
+                  initial={{ scale: 0.8, opacity: 0.5 }}
+                  animate={{ scale: 1.8, opacity: 0 }}
+                  transition={{ duration: 0.7, delay: 0.3, ease: "easeOut" }}
+                  style={{
+                    position: "absolute", inset: 0, borderRadius: "50%",
+                    border: "1.5px solid rgba(52,199,89,0.25)",
+                  }}
+                />
+                {/* Checkmark */}
+                <motion.div
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ type: "spring", stiffness: 500, damping: 24, delay: 0.35 }}
+                  style={{
+                    position: "absolute", inset: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="#34c759" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <motion.path d="M4 12 L9 17 L20 6"
+                      initial={{ pathLength: 0 }} animate={{ pathLength: 1 }}
+                      transition={{ duration: 0.3, delay: 0.45, ease: [0.16, 1, 0.3, 1] }} />
+                  </svg>
+                </motion.div>
+              </>
             ) : (
               <div style={{
                 width: 28, height: 28, borderRadius: "50%",
@@ -665,6 +709,319 @@ function ThinkingIndicator() {
 /* ── Animation presets ───────────────────────────────────── */
 const msgSpring = { type: "spring", stiffness: 400, damping: 30 };
 
+/* ── Interactive Query Filters ──────────────────────────── */
+/*
+ * Filters ONLY trigger on very specific analytical/parameterized queries.
+ * Normal conversational queries ("tell me about oasis", "what does oasis own")
+ * should NEVER be intercepted — they go straight to the AI.
+ *
+ * Trigger examples:
+ *   "companies with AGM approval under 85%"
+ *   "screen top stocks in technology sector"
+ *   "search oasis holdings last 60 days min 10%"
+ *   "EDINET filings for Toyota last 30 days"
+ */
+const QUERY_FILTERS = [
+  {
+    id: "agm_voting",
+    patterns: [
+      /companies\s+(?:.*?)(?:where|with|that have)\s+(?:.*?)(?:AGM|voting|approval)\s*(?:under|below|less than)\s*(\d+)/i,
+      /(?:AGM|voting)\s+(?:.*?)(?:under|below|less than)\s*(\d+)/i,
+      /(?:low|failed|rejected)\s+(?:AGM\s+)?(?:shareholder\s+)?(?:approval|vote|resolution)/i,
+      /(?:TSE|stock).+(?:AGM|approval|voting).+(?:under|below)\s*(\d+)/i,
+      /AGM\s+(?:under|below)\s*(\d+)/i,
+    ],
+    title: "AGM Voting Scanner",
+    subtitle: "Scan EDINET extraordinary reports",
+    icon: Vote,
+    color: "#f59e0b",
+    buttonLabel: "Scan AGM Results",
+    extractEntity: () => null,
+    entityLabel: null,
+    filters: [
+      { key: "vote_threshold", label: "Approval Threshold", type: "slider", min: 50, max: 99, default: 90, unit: "%", step: 1 },
+      { key: "days_back", label: "Lookback Period", type: "slider", min: 30, max: 730, default: 90, unit: " days", step: 30,
+        presets: [
+          { value: 30, label: "1mo" },
+          { value: 90, label: "3mo" },
+          { value: 365, label: "1yr" },
+          { value: 730, label: "2yr" },
+        ],
+      },
+      { key: "max_results", label: "Max Companies", type: "slider", min: 5, max: 50, default: 20, unit: "", step: 5 },
+      { key: "only_rejected", label: "Rejected only", description: "否決 resolutions", type: "toggle", default: false },
+    ],
+    buildQuery: (_, f) =>
+      `[EXACT TOOL CALL REQUIRED] Call scan_agm_voting with these EXACT parameters — do NOT change any values:\n` +
+      `- threshold: ${f.vote_threshold}\n` +
+      `- days_back: ${f.days_back}\n` +
+      `- max_results: ${f.max_results}\n` +
+      `- only_rejected: ${f.only_rejected}\n\n` +
+      `The user specifically configured these values. Show results ranked by lowest approval with company name, stock code, resolution details, and vote percentages.`,
+  },
+  {
+    id: "sector_screen",
+    patterns: [
+      /screen\s+(?:the\s+)?(?:top|best)?\s*(?:companies?|stocks?)\s+(?:in|from|for)\s+(.+)/i,
+      /(?:rank|compare)\s+(?:companies?|stocks?)\s+(?:in|from)\s+(.+?)(?:\s+sector|\s+industry)?$/i,
+    ],
+    title: "Sector Screening",
+    subtitle: "Compare companies in a sector",
+    icon: BarChart3,
+    color: "#0ea5e9",
+    extractEntity: (match) => match[1]?.trim(),
+    entityLabel: "Sector",
+    filters: [
+      { key: "limit", label: "Companies to Show", type: "slider", min: 3, max: 15, default: 5, unit: "", step: 1 },
+      { key: "sort_by", label: "Sort By", type: "select", options: [
+        { value: "score", label: "Overall score" },
+        { value: "market_cap", label: "Market cap" },
+        { value: "pe_ratio", label: "P/E ratio" },
+        { value: "dividend_yield", label: "Dividend yield" },
+      ], default: "score" },
+    ],
+    buildQuery: (entity, filters) =>
+      `Screen the top ${filters.limit} companies in the ${entity} sector. Sort by ${filters.sort_by.replace("_", " ")}. Include key financial metrics.`,
+  },
+  {
+    id: "filing_search",
+    patterns: [
+      /(?:search|find|get)\s+(?:EDINET|SEC)\s+(?:filings?|reports?)\s+(?:for|of)\s+(.+)/i,
+      /(?:EDINET|extraordinary)\s+(?:filings?|reports?)\s+(?:for|of)\s+(.+)/i,
+    ],
+    title: "Filing Search",
+    subtitle: "Search regulatory filings",
+    icon: FileText,
+    color: "#8b5cf6",
+    extractEntity: (match) => match[1]?.trim(),
+    entityLabel: "Company",
+    filters: [
+      { key: "days_back", label: "Lookback Period", type: "slider", min: 7, max: 365, default: 90, unit: " days", step: 7 },
+      { key: "filing_type", label: "Filing Type", type: "select", options: [
+        { value: "all", label: "All filings" },
+        { value: "annual", label: "Annual reports (有価証券報告書)" },
+        { value: "quarterly", label: "Quarterly reports (四半期報告書)" },
+        { value: "extraordinary", label: "Extraordinary reports (臨時報告書)" },
+      ], default: "all" },
+    ],
+    buildQuery: (entity, filters) => {
+      const typeStr = filters.filing_type === "all" ? "" : ` Focus on ${filters.filing_type} reports.`;
+      return `Search for recent filings for ${entity}. Use search_edinet_filings with days_back=${filters.days_back}.${typeStr}`;
+    },
+  },
+];
+
+function detectQueryFilter(query) {
+  const q = query.trim();
+  if (q.length < 8) return null;
+  // Skip if query already has filter params embedded (from buildQuery)
+  if (q.includes("days_back=") || (q.includes("Look back") && q.includes("days"))) return null;
+  for (const cfg of QUERY_FILTERS) {
+    for (const pattern of cfg.patterns) {
+      const match = q.match(pattern);
+      if (match) {
+        const entity = cfg.extractEntity(match);
+        // Avoid false positives — entity should be meaningful
+        if (cfg.entityLabel && (!entity || entity.length < 2 || entity.length > 60)) continue;
+        return { ...cfg, entity, defaults: Object.fromEntries(cfg.filters.map(f => [f.key, f.default])) };
+      }
+    }
+  }
+  return null;
+}
+
+/* Inline filter slider with Apple-style design */
+function FilterSlider({ label, value, onChange, min, max, step, unit, accent = "#6366f1", presets }) {
+  const pct = ((value - min) / (max - min)) * 100;
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: presets ? 6 : 8 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 500, color: "rgba(0,0,0,0.5)", letterSpacing: "-0.01em" }}>{label}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: accent, fontFeatureSettings: '"tnum" 1', fontFamily: "'SF Mono', Menlo, monospace" }}>{value}{unit}</span>
+      </div>
+      {presets && (
+        <div style={{ display: "flex", gap: 5, marginBottom: 8 }}>
+          {presets.map(p => (
+            <button key={p.value} onClick={() => onChange(p.value)} style={{
+              flex: 1, padding: "5px 0", borderRadius: 7, border: "none", cursor: "pointer",
+              fontSize: 11, fontWeight: 500, transition: "all 0.2s ease",
+              background: value === p.value ? `${accent}14` : "rgba(0,0,0,0.025)",
+              color: value === p.value ? accent : "rgba(0,0,0,0.3)",
+              boxShadow: value === p.value ? `0 0 0 1.5px ${accent}30` : "none",
+            }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ position: "relative", height: 24, display: "flex", alignItems: "center" }}>
+        <div style={{ position: "absolute", left: 0, right: 0, height: 4, borderRadius: 2, background: "rgba(0,0,0,0.06)" }} />
+        <div style={{ position: "absolute", left: 0, width: `${pct}%`, height: 4, borderRadius: 2, background: accent, opacity: 0.5, transition: "width 0.1s ease" }} />
+        <input
+          type="range" min={min} max={max} step={step} value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="filter-slider-input"
+          style={{ position: "absolute", width: "100%", height: 24, opacity: 0, cursor: "pointer", margin: 0 }}
+        />
+        <div style={{
+          position: "absolute", left: `${pct}%`, transform: "translateX(-50%)",
+          width: 18, height: 18, borderRadius: "50%", background: "white",
+          boxShadow: `0 1px 5px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.04), 0 0 0 3px ${accent}18`,
+          transition: "left 0.1s ease",
+          pointerEvents: "none",
+        }} />
+      </div>
+    </div>
+  );
+}
+
+/* Toggle filter (on/off) */
+function FilterToggle({ label, description, value, onChange, accent = "#6366f1" }) {
+  return (
+    <div style={{ marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+      <div>
+        <span style={{ fontSize: 12.5, fontWeight: 500, color: "rgba(0,0,0,0.5)", letterSpacing: "-0.01em" }}>{label}</span>
+        {description && <span style={{ fontSize: 11, color: "rgba(0,0,0,0.25)", marginLeft: 6 }}>{description}</span>}
+      </div>
+      <button onClick={() => onChange(!value)} style={{
+        width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
+        background: value ? accent : "rgba(0,0,0,0.1)",
+        position: "relative", transition: "background 0.2s ease", flexShrink: 0,
+      }}>
+        <div style={{
+          width: 18, height: 18, borderRadius: "50%", background: "white",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+          position: "absolute", top: 2, left: value ? 20 : 2,
+          transition: "left 0.2s ease",
+        }} />
+      </button>
+    </div>
+  );
+}
+
+function FilterSelect({ label, value, onChange, options, accent = "#6366f1" }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <span style={{ display: "block", fontSize: 12.5, fontWeight: 500, color: "rgba(0,0,0,0.5)", marginBottom: 8, letterSpacing: "-0.01em" }}>{label}</span>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {options.map(opt => (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            style={{
+              padding: "7px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+              fontSize: 12, fontWeight: 500, transition: "all 0.2s ease",
+              background: value === opt.value ? `${accent}12` : "rgba(0,0,0,0.02)",
+              color: value === opt.value ? accent : "rgba(0,0,0,0.35)",
+              boxShadow: value === opt.value ? `0 0 0 1.5px ${accent}30` : "0 0 0 1px rgba(0,0,0,0.06)",
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function QueryFilterCard({ config, onApply, onDismiss }) {
+  const [values, setValues] = useState(config.defaults);
+  const Icon = config.icon;
+  const update = (key, val) => setValues(prev => ({ ...prev, [key]: val }));
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -8, scale: 0.97 }}
+      transition={{ type: "spring", stiffness: 400, damping: 28 }}
+      style={{
+        borderRadius: 16, overflow: "hidden",
+        background: "rgba(255,255,255,0.85)",
+        backdropFilter: "blur(24px) saturate(1.6)",
+        WebkitBackdropFilter: "blur(24px) saturate(1.6)",
+        boxShadow: "0 0 0 1px rgba(0,0,0,0.06), 0 8px 40px -8px rgba(0,0,0,0.08)",
+        maxWidth: 400,
+      }}
+    >
+      {/* Header */}
+      <div style={{ padding: "16px 20px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{
+          width: 32, height: 32, borderRadius: 10,
+          background: `${config.color}10`, display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <Icon style={{ width: 16, height: 16, color: config.color }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "rgba(0,0,0,0.8)", letterSpacing: "-0.01em" }}>{config.title}</div>
+          <div style={{ fontSize: 11, color: "rgba(0,0,0,0.3)", marginTop: 1 }}>{config.subtitle}</div>
+        </div>
+        <button onClick={onDismiss} style={{
+          width: 24, height: 24, borderRadius: "50%", border: "none", cursor: "pointer",
+          background: "rgba(0,0,0,0.04)", display: "flex", alignItems: "center", justifyContent: "center",
+          color: "rgba(0,0,0,0.25)", transition: "all 0.2s",
+        }}>
+          <X style={{ width: 12, height: 12 }} />
+        </button>
+      </div>
+
+      {/* Entity display */}
+      {config.entity && (
+        <div style={{ padding: "0 20px 8px" }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            padding: "5px 12px", borderRadius: 8,
+            background: `${config.color}08`, border: `1px solid ${config.color}15`,
+          }}>
+            <span style={{ fontSize: 10, color: "rgba(0,0,0,0.3)", textTransform: "uppercase", fontWeight: 600, letterSpacing: "0.05em" }}>{config.entityLabel}</span>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: config.color }}>{config.entity}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Divider */}
+      <div style={{ margin: "0 20px", height: 1, background: "rgba(0,0,0,0.04)" }} />
+
+      {/* Filters */}
+      <div style={{ padding: "14px 20px 4px" }}>
+        {config.filters.map(f =>
+          f.type === "slider" ? (
+            <FilterSlider key={f.key} label={f.label} value={values[f.key]}
+              onChange={(v) => update(f.key, v)} min={f.min} max={f.max} step={f.step} unit={f.unit} accent={config.color} presets={f.presets} />
+          ) : f.type === "select" ? (
+            <FilterSelect key={f.key} label={f.label} value={values[f.key]}
+              onChange={(v) => update(f.key, v)} options={f.options} accent={config.color} />
+          ) : f.type === "toggle" ? (
+            <FilterToggle key={f.key} label={f.label} description={f.description} value={values[f.key]}
+              onChange={(v) => update(f.key, v)} accent={config.color} />
+          ) : null
+        )}
+      </div>
+
+      {/* Action */}
+      <div style={{ padding: "4px 20px 16px" }}>
+        <motion.button
+          onClick={() => onApply(config.buildQuery(config.entity, values))}
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.98 }}
+          style={{
+            width: "100%", padding: "10px 0", borderRadius: 10, border: "none", cursor: "pointer",
+            fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
+            color: "white", background: config.color,
+            boxShadow: `0 2px 12px -2px ${config.color}40`,
+            transition: "all 0.2s",
+          }}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <Search style={{ width: 14, height: 14 }} />
+            {config.buttonLabel || "Search"}
+          </span>
+        </motion.button>
+      </div>
+    </motion.div>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════ */
 /*   MAIN QUERY PAGE                                         */
 /* ══════════════════════════════════════════════════════════ */
@@ -693,7 +1050,11 @@ export default function Query() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [streamTools, setStreamTools] = useState([]);
-  const [speedMode, setSpeedMode] = useState(() => { try { return localStorage.getItem("kabu-speed") || "instant"; } catch { return "instant"; } });
+  const [activeFilter, setActiveFilter] = useState(null); // { config, originalQuery }
+  const [speedMode, setSpeedMode] = useState("instant");
+  const [sendGlow, setSendGlow] = useState(false);    // golden flash while streaming
+  const [showMaxToast, setShowMaxToast] = useState(false); // "Coming Soon" bottom toast
+  const [maxFlash, setMaxFlash] = useState(false);     // brief button highlight
   const [chatOpen, setChatOpen] = useState(false);
   const textBufferRef = useRef("");
   const rafRef = useRef(null);
@@ -771,6 +1132,7 @@ export default function Query() {
   }, []);
   useEffect(() => { const t = setTimeout(() => textareaRef.current?.focus(), 100); return () => clearTimeout(t); }, []);
   useEffect(() => { if (!isStreaming) { const t = setTimeout(() => textareaRef.current?.focus(), 50); return () => clearTimeout(t); } }, [isStreaming]);
+  useEffect(() => { if (activeFilter) { const t = setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current?.scrollHeight, behavior: "smooth" }), 100); return () => clearTimeout(t); } }, [activeFilter]);
 
   /* ── Pre-filled prompt from navigation state ── */
   useEffect(() => {
@@ -827,13 +1189,14 @@ export default function Query() {
     }).catch(() => {});
   }, []);
 
-  const handleSend = useCallback(async (text) => {
-    const q = (text || input).trim(); if (!q || streamingRef.current) return;
-    if (isListening) stopListening();
+  const handleSendDirectRef = useRef(null);
+
+  const handleSendDirect = useCallback(async (text) => {
+    const q = (text || "").trim(); if (!q || streamingRef.current) return;
     const userMsg = { id: nextId(), role: "user", content: q };
     const updated = [...messages, userMsg];
     streamingRef.current = true;
-    setMessages(updated); setInput(""); setIsStreaming(true); setStreamText(""); setStreamTools([]);
+    setMessages(updated); setInput(""); setIsStreaming(true); setStreamText(""); setStreamTools([]); setActiveFilter(null);
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController(); abortRef.current = controller;
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -886,7 +1249,81 @@ export default function Query() {
     setMessages(prev => [...prev, { id: nextId(), role: "assistant", content: fullText || textBufferRef.current, tools: [...tools] }]);
     streamingRef.current = false;
     setStreamText(""); setStreamTools([]); setIsStreaming(false); textBufferRef.current = "";
-  }, [input, messages, speedMode, isListening, stopListening]);
+  }, [messages, speedMode]);
+  handleSendDirectRef.current = handleSendDirect;
+
+  const handleFilterApply = useCallback((refinedQuery) => {
+    setActiveFilter(null);
+    // Send refined query without adding a new user bubble (original message already shown)
+    if (streamingRef.current) return;
+    streamingRef.current = true;
+    setIsStreaming(true); setStreamText(""); setStreamTools([]);
+    const controller = new AbortController();
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = controller;
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    const apiMessages = [...messages, { role: "user", content: refinedQuery }].map(m => ({ role: m.role, content: m.content }));
+    let fullText = ""; const tools = [];
+    textBufferRef.current = "";
+    const isInstant = speedMode === "instant";
+    (async () => {
+      try {
+        await streamChat(apiMessages, {
+          signal: controller.signal,
+          mode: speedMode,
+          onText: (chunk) => {
+            fullText += chunk;
+            textBufferRef.current = fullText;
+            if (!isInstant && !rafRef.current) {
+              rafRef.current = requestAnimationFrame(() => { rafRef.current = null; setStreamText(textBufferRef.current); });
+            }
+          },
+          onToolCall: ({ id, tool, input: ti }) => { tools.push({ id, tool, input: ti, result: null, isLoading: true, serverPct: 5, serverStage: "starting" }); setStreamTools([...tools]); },
+          onToolProgress: (data) => {
+            const tc = tools.find(t => (data.id ? t.id === data.id : t.tool === data.tool) && t.isLoading);
+            if (tc) { tc.serverPct = data.pct; tc.serverStage = data.stage || ""; setStreamTools([...tools]); }
+          },
+          onToolResult: (data) => {
+            const tc = tools.find(t => (data.id ? t.id === data.id : t.tool === data.tool) && t.isLoading);
+            if (tc) {
+              tc.result = data.summary; tc.isLoading = false; tc.serverPct = 100; tc.sources = data.sources || []; tc.source_details = data.source_details || {};
+              if (data.tool === "get_stock_prices" && data.stock_code) {
+                tc.stock_code = data.stock_code; tc.live_price = data.live_price; tc.live_change_pct = data.live_change_pct;
+                tc.market_state = data.market_state; tc.previous_close = data.previous_close; tc.price_history = data.price_history;
+              }
+            }
+            setStreamTools([...tools]);
+          },
+          onError: (msg) => { if (!controller.signal.aborted) { fullText += `\n\n*Error: ${msg}*`; textBufferRef.current = fullText; if (!isInstant) setStreamText(fullText); } },
+          onDone: () => { if (isInstant) setStreamText(textBufferRef.current); },
+        });
+      } catch {}
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      if (!streamingRef.current) return;
+      setMessages(prev => [...prev, { id: nextId(), role: "assistant", content: fullText || textBufferRef.current, tools: [...tools] }]);
+      streamingRef.current = false;
+      setStreamText(""); setStreamTools([]); setIsStreaming(false); textBufferRef.current = "";
+    })();
+  }, [messages, speedMode]);
+
+  const handleFilterDismiss = useCallback(() => {
+    setActiveFilter(null);
+  }, []);
+
+  const handleSend = useCallback(async (text) => {
+    const q = (text || input).trim(); if (!q || streamingRef.current) return;
+    if (isListening) stopListening();
+    // Check for filter-worthy queries
+    const filterConfig = detectQueryFilter(q);
+    if (filterConfig) {
+      setInput("");
+      const userMsg = { id: nextId(), role: "user", content: q };
+      setMessages(prev => [...prev, userMsg]);
+      setActiveFilter({ config: filterConfig, originalQuery: q });
+      return;
+    }
+    handleSendDirect(q);
+  }, [input, isListening, stopListening, handleSendDirect]);
 
   const handleStop = useCallback(() => {
     if (!streamingRef.current) return;
@@ -902,7 +1339,7 @@ export default function Query() {
     if (abortRef.current) abortRef.current.abort();
     if (isListening) stopListening();
     streamingRef.current = false;
-    setMessages([]); setActiveConvoId(null); setInput(""); setStreamText(""); setStreamTools([]); setIsStreaming(false); setCompanyContext(null); textBufferRef.current = "";
+    setMessages([]); setActiveConvoId(null); setInput(""); setStreamText(""); setStreamTools([]); setIsStreaming(false); setCompanyContext(null); setActiveFilter(null); textBufferRef.current = "";
     textareaRef.current?.focus();
   }, [isListening, stopListening]);
 
@@ -932,22 +1369,55 @@ export default function Query() {
 
   /* ── Render helpers (plain functions, NOT React components) ── */
 
+  const handleMaxClick = useCallback(() => {
+    if (maxFlash) return;
+    setMaxFlash(true);
+    setTimeout(() => setMaxFlash(false), 300); // brief button highlight
+    setShowMaxToast(true);
+  }, [maxFlash]);
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (!showMaxToast) return;
+    const timer = setTimeout(() => setShowMaxToast(false), 5000);
+    return () => clearTimeout(timer);
+  }, [showMaxToast]);
+
+  // Golden: activate on first send, stays golden permanently
+  useEffect(() => {
+    if (isStreaming && !sendGlow) setSendGlow(true);
+  }, [isStreaming]);
+
   const renderSpeedToggle = () => (
     <div className="relative group/speed">
-      <button
-        onClick={() => {
-          const next = speedMode === "stream" ? "instant" : "stream";
-          setSpeedMode(next);
-          try { localStorage.setItem("kabu-speed", next); } catch {}
-        }}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/[0.03] hover:bg-black/[0.06] text-[11px] text-black/30 hover:text-black/50 transition-all duration-200"
+      <div
+        className="flex items-center rounded-full p-0.5"
+        style={{ background: "rgba(0,0,0,0.03)" }}
       >
-        {speedMode === "stream" ? <Clock className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
-        {speedMode === "stream" ? "Max" : "Min"}
-      </button>
-      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2.5 px-3 py-1.5 rounded-lg bg-black text-white text-[11px] font-semibold whitespace-nowrap opacity-0 group-hover/speed:opacity-100 pointer-events-none transition-opacity duration-200 shadow-xl z-50">
-        {speedMode === "stream" ? "Mischa 1.0 Max" : "Mischa 1.2 Min"}
-        <div className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-black rotate-45 -mt-1" />
+        <button
+          onClick={() => {}}
+          className="relative flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium transition-all duration-300"
+          style={{
+            background: maxFlash ? "transparent" : "white",
+            color: maxFlash ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.6)",
+            boxShadow: maxFlash ? "none" : "0 1px 3px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04)",
+          }}
+        >
+          <Zap className="w-3 h-3" />
+          Min
+        </button>
+        <button
+          onClick={handleMaxClick}
+          className="relative flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium transition-all duration-300"
+          style={{
+            background: maxFlash ? "white" : "transparent",
+            color: maxFlash ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.25)",
+            boxShadow: maxFlash ? "0 1px 3px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04)" : "none",
+          }}
+        >
+          <Clock className="w-3 h-3" />
+          Max
+        </button>
       </div>
     </div>
   );
@@ -978,43 +1448,26 @@ export default function Query() {
           onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; const limit = Math.min(160, window.innerHeight * 0.3); e.target.style.height = Math.min(e.target.scrollHeight, limit) + "px"; }}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!isStreaming) handleSend(); } }}
           placeholder={isListening ? "Listening..." : placeholder}
-          className={`w-full bg-transparent text-black/85 placeholder-black/25 text-[15px] outline-none resize-none leading-relaxed tracking-[-0.01em] px-5 pt-4 pb-2 ${isListening ? "placeholder-red-400/50" : ""}`}
-          style={{ minHeight: large ? "48px" : "32px", maxHeight: "min(160px, 30vh)" }}
+          className={`w-full bg-transparent text-black/85 placeholder-black/20 text-[15px] outline-none resize-none leading-relaxed tracking-[-0.01em] px-5 pt-3.5 pb-1 ${isListening ? "placeholder-red-400/50" : ""}`}
+          style={{ minHeight: large ? "44px" : "28px", maxHeight: "min(160px, 30vh)" }}
         />
 
-        {/* Action row */}
-        <div className="flex items-center justify-between px-3 pb-3 pt-1">
-          {/* Left spacer */}
-          <div className="flex items-center" />
-
-          {/* Right side */}
-          <div className="flex items-center gap-2.5">
-            {renderSpeedToggle()}
-
-            {isListening && (
-              <motion.span
-                className="text-[10px] text-red-400/70 font-medium"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: [0.5, 1, 0.5] }}
-                transition={{ duration: 1.5, repeat: Infinity }}
-              >
-                Recording...
-              </motion.span>
-            )}
-
-            {/* Mic button */}
+        {/* Action row — mic left, mode center, send right */}
+        <div className="flex items-center px-3 pb-2.5 pt-0.5">
+          {/* Left: mic */}
+          <div className="flex items-center gap-1.5 w-[72px]">
             {HAS_SPEECH && !isStreaming && (
               <div className="relative group/mic">
                 <button
                   type="button"
                   onClick={handleMicClick}
-                  className={`flex items-center justify-center w-10 h-10 rounded-xl transition-all duration-200 ${
+                  className={`flex items-center justify-center w-8 h-8 rounded-full transition-all duration-300 ${
                     isListening
-                      ? "bg-red-500/15 text-red-400 ring-1 ring-red-500/25 hover:bg-red-500/25"
-                      : "text-black/25 hover:text-black/50 hover:bg-black/[0.04]"
+                      ? "bg-red-500/10 text-red-400 shadow-[0_0_0_1px_rgba(239,68,68,0.2)] hover:bg-red-500/20"
+                      : "text-black/20 hover:text-black/40 hover:bg-black/[0.04]"
                   }`}
                 >
-                  {isListening ? <MicOff className="w-[18px] h-[18px]" /> : <Mic className="w-[18px] h-[18px]" />}
+                  {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </button>
                 {!isListening && (
                   <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2.5 px-3 py-1.5 rounded-lg bg-black text-white text-[11px] font-semibold whitespace-nowrap opacity-0 group-hover/mic:opacity-100 pointer-events-none transition-opacity duration-200 shadow-xl z-50">
@@ -1024,32 +1477,49 @@ export default function Query() {
                 )}
               </div>
             )}
+            {isListening && (
+              <motion.span
+                className="text-[10px] text-red-400/60 font-medium tracking-wide"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: [0.4, 1, 0.4] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              >
+                REC
+              </motion.span>
+            )}
+          </div>
 
-            {/* Send / Stop / Voice */}
+          {/* Center: mode toggle */}
+          <div className="flex-1 flex justify-center">
+            {renderSpeedToggle()}
+          </div>
+
+          {/* Right: send / stop / voice */}
+          <div className="flex items-center justify-end w-[72px]">
             {isStreaming ? (
               <button
                 type="button"
                 onClick={handleStop}
-                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-[12px] font-medium bg-black/[0.05] text-black/40 hover:bg-black/[0.1] hover:text-black/60 transition-all duration-200"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium bg-black/[0.04] text-black/35 hover:bg-black/[0.08] hover:text-black/55 transition-all duration-300"
               >
-                <Square className="w-2.5 h-2.5 fill-current" /> Stop
+                <Square className="w-2 h-2 fill-current" /> Stop
               </button>
             ) : input.trim() ? (
               <button
                 type="button"
                 onClick={() => handleSend()}
-                className="flex items-center justify-center w-10 h-10 rounded-full bg-black text-white hover:bg-gray-800 transition-all duration-200 shadow-lg shadow-black/15"
+                className="flex items-center justify-center w-8 h-8 rounded-full bg-black text-white hover:bg-gray-800 transition-all duration-300 shadow-md shadow-black/10"
               >
-                <ArrowUp className="w-4 h-4" strokeWidth={2.5} />
+                <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.5} />
               </button>
             ) : (
               <div className="relative group/voice">
                 <button
                   type="button"
                   onClick={handleVoiceClick}
-                  className="flex items-center justify-center w-10 h-10 rounded-xl text-black/25 hover:text-black/50 hover:bg-black/[0.04] transition-all duration-200"
+                  className="flex items-center justify-center w-8 h-8 rounded-full text-black/20 hover:text-black/40 hover:bg-black/[0.04] transition-all duration-300"
                 >
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                     <line x1="4" y1="12" x2="4" y2="12" />
                     <line x1="8" y1="8" x2="8" y2="16" />
                     <line x1="12" y1="4" x2="12" y2="20" />
@@ -1180,7 +1650,7 @@ export default function Query() {
     <div className="h-dvh flex bg-[#f8f9fb] text-black overflow-hidden relative">
       {/* Interactive flow field background */}
       <div className="absolute inset-0 z-0">
-        <FlowFieldBackground colorMode={speedMode} />
+        <FlowFieldBackground colorMode={sendGlow ? "stream" : "blue"} />
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden relative z-10">
@@ -1273,6 +1743,17 @@ export default function Query() {
                     )
                   )}
 
+                  {/* Active filter card */}
+                  {activeFilter && !isStreaming && (
+                    <motion.div className="mb-8" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={msgSpring}>
+                      <QueryFilterCard
+                        config={activeFilter.config}
+                        onApply={handleFilterApply}
+                        onDismiss={handleFilterDismiss}
+                      />
+                    </motion.div>
+                  )}
+
                   {/* Streaming response */}
                   {isStreaming && (
                     <motion.div className="mb-8" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -1315,6 +1796,48 @@ export default function Query() {
 
       <VoiceOverlay isOpen={chatOpen} onClose={() => setChatOpen(false)} />
 
+      {/* Max "Coming Soon" — minimal bottom toast */}
+      <AnimatePresence>
+        {showMaxToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ type: "spring", stiffness: 500, damping: 35, mass: 0.8 }}
+            onClick={() => setShowMaxToast(false)}
+            style={{
+              position: "fixed", bottom: 140, left: "50%", x: "-50%",
+              zIndex: 200, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "10px 20px", borderRadius: 100,
+              background: "rgba(0,0,0,0.75)",
+              backdropFilter: "blur(20px)",
+              WebkitBackdropFilter: "blur(20px)",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.12)",
+            }}
+          >
+            <div style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: "#f59e0b",
+              boxShadow: "0 0 8px rgba(245,158,11,0.5)",
+            }} />
+            <span style={{
+              fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.9)",
+              letterSpacing: "-0.01em",
+            }}>
+              Max — Coming Soon
+            </span>
+            {/* Auto-dismiss progress */}
+            <motion.div
+              initial={{ width: 32 }}
+              animate={{ width: 0 }}
+              transition={{ duration: 5, ease: "linear" }}
+              style={{ height: 2, borderRadius: 1, background: "rgba(255,255,255,0.2)" }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <style>{`
         .query-scroll::-webkit-scrollbar { width: 4px; }
         .query-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -1324,6 +1847,8 @@ export default function Query() {
         .streaming-cursor { animation: blink 0.8s ease-in-out infinite; }
         @keyframes toolRingSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .tool-ring-spin { animation: toolRingSpin 2.5s linear infinite; }
+        .filter-slider-input::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; cursor: pointer; }
+        .filter-slider-input::-moz-range-thumb { width: 16px; height: 16px; cursor: pointer; border: none; background: transparent; }
       `}</style>
     </div>
   );

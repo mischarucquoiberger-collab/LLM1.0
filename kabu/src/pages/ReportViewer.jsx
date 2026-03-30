@@ -10,8 +10,12 @@ import {
   Keyboard, Zap, Trash2, Download, Clock,
   Terminal, Activity, Crosshair, Layers, Gem, Radar,
   Scale, HeartPulse, Calculator, Target, Eye, Shuffle,
+  MessageCircle, AlertCircle, ArrowUp, Square,
 } from "lucide-react";
 import { toast } from "@/components/ui/use-toast";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { streamReportChat } from "@/api/backend";
 
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -902,7 +906,7 @@ const NOTE_TEMPLATES = [
 const SHORTCUTS = [
   { keys: ["1"], desc: "Sources" },
   { keys: ["2"], desc: "Notes" },
-  { keys: ["3"], desc: "Research tools" },
+  { keys: ["3"], desc: "AI assistant" },
   { keys: ["4"], desc: "Valuation lab" },
   { keys: ["Q"], desc: "Query mode" },
   { keys: ["Esc"], desc: "Close panel" },
@@ -968,6 +972,364 @@ function SourceCard({ source, index }) {
     </motion.a>
   );
 }
+
+/* ── AI markdown components (light theme) ──────────────────── */
+const aiMd = {
+  table: ({ children }) => (
+    <div className="my-3 overflow-x-auto rounded-xl ring-1 ring-black/[0.06] overflow-hidden">
+      <table className="w-full text-[11px]">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-black/[0.02]">{children}</thead>,
+  th: ({ children }) => (
+    <th className="px-2.5 py-1.5 text-left text-[9px] font-medium text-gray-400 uppercase tracking-wider border-b border-black/[0.06]">{children}</th>
+  ),
+  tbody: ({ children }) => <tbody className="divide-y divide-black/[0.04]">{children}</tbody>,
+  tr: ({ children }) => <tr className="hover:bg-black/[0.02] transition-colors">{children}</tr>,
+  td: ({ children }) => (
+    <td className="px-2.5 py-2 text-gray-500 text-[11px] tabular-nums">{children}</td>
+  ),
+  code: ({ children }) => (
+    <code className="px-1 py-0.5 rounded-md bg-black/[0.04] text-[10px] font-mono text-gray-500">{children}</code>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-2.5 rounded-xl bg-black/[0.03] ring-1 ring-black/[0.06] overflow-x-auto [&_code]:block [&_code]:px-3 [&_code]:py-2.5 [&_code]:text-gray-500 [&_code]:leading-relaxed [&_code]:bg-transparent [&_code]:rounded-none [&_code]:p-0">{children}</pre>
+  ),
+  p: ({ children }) => <p className="mb-2.5 leading-[1.75] text-[12px] text-gray-600 tracking-[-0.01em]">{children}</p>,
+  h1: ({ children }) => <h1 className="text-[15px] font-semibold text-gray-800 mt-4 mb-1.5 tracking-tight">{children}</h1>,
+  h2: ({ children }) => <h2 className="text-[13px] font-semibold text-gray-700 mt-3 mb-1.5 tracking-tight">{children}</h2>,
+  h3: ({ children }) => <h3 className="text-[12px] font-semibold text-gray-600 mt-2.5 mb-1 tracking-tight">{children}</h3>,
+  strong: ({ children }) => <strong className="text-gray-800 font-semibold">{children}</strong>,
+  em: ({ children }) => <em className="text-gray-400 italic">{children}</em>,
+  ul: ({ children }) => <ul className="list-disc mb-2.5 space-y-0.5 ml-4 text-gray-500 text-[12px] leading-[1.65] marker:text-gray-300">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal mb-2.5 space-y-0.5 ml-4 text-gray-500 text-[12px] leading-[1.65] marker:text-gray-300">{children}</ol>,
+  li: ({ children }) => <li className="text-gray-500 text-[12px] leading-[1.65] pl-0.5">{children}</li>,
+  a: ({ href, children }) => {
+    const isInternal = href && (href.startsWith("/") && !href.startsWith("//"));
+    return isInternal ? (
+      <button
+        onClick={() => window.__reportAssistantNavigate?.(href)}
+        className="text-blue-500 hover:text-blue-600 underline underline-offset-2 decoration-blue-300/40 hover:decoration-blue-400/60 transition-colors cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit"
+      >{children}</button>
+    ) : (
+      <a href={href} target="_blank" rel="noopener noreferrer"
+        className="text-blue-500 hover:text-blue-600 underline underline-offset-2 decoration-blue-300/40 hover:decoration-blue-400/60 transition-colors">{children}</a>
+    );
+  },
+  hr: () => <div className="my-4 h-px bg-gradient-to-r from-transparent via-black/[0.06] to-transparent" />,
+  blockquote: ({ children }) => (
+    <blockquote className="border-l-2 border-black/[0.08] pl-3 my-2.5 text-gray-400">{children}</blockquote>
+  ),
+};
+
+/* ── AI suggestion cards ───────────────────────────────────── */
+const AI_SUGGESTIONS = [
+  { text: "Executive summary in 3 bullets",  icon: FileText,   color: "text-emerald-500/70" },
+  { text: "Bull vs bear case",               icon: TrendingUp, color: "text-blue-500/70" },
+  { text: "Key financial risks",             icon: Shield,     color: "text-amber-500/70" },
+  { text: "Intrinsic value estimate",        icon: DollarSign, color: "text-cyan-500/70" },
+  { text: "Revenue & margin breakdown",      icon: BarChart3,  color: "text-purple-500/70" },
+  { text: "SWOT analysis",                   icon: Lightbulb,  color: "text-rose-500/70" },
+  { text: "Peer comparison",                 icon: Users,      color: "text-indigo-500/70" },
+  { text: "Upcoming catalysts",              icon: Zap,        color: "text-yellow-500/70" },
+];
+
+/* ── Inline AI Assistant (dark theme, renders inside tab) ── */
+function InlineAssistant({ jobId, companyName, file, sources }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [error, setError] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+  const copyTimerRef = useRef(null);
+  const abortRef = useRef(null);
+  const scrollRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, isStreaming]);
+
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 200);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    return () => { abortRef.current?.abort(); if (copyTimerRef.current) clearTimeout(copyTimerRef.current); };
+  }, []);
+
+  const handleCopy = (id, text) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(id);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopiedId(null), 2000);
+    }).catch(() => {});
+  };
+
+  const sendMessage = useCallback(
+    (text) => {
+      if (!text.trim() || isStreaming || (!jobId && !file)) return;
+      const userMsg = { id: Date.now(), role: "user", content: text.trim() };
+      const assistantMsg = { id: Date.now() + 1, role: "assistant", content: "", streaming: true };
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setInput("");
+      setIsStreaming(true);
+      setError(null);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const history = [...messages, userMsg].map((m) => ({ role: m.role, content: m.content }));
+
+      streamReportChat(jobId, history, {
+        signal: controller.signal,
+        file,
+        sources,
+        company: companyName,
+        onText: (chunk) => {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.streaming) return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
+            return prev;
+          });
+        },
+        onError: (msg) => {
+          setError(msg);
+          setIsStreaming(false);
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.streaming) return [...prev.slice(0, -1), { ...last, streaming: false }];
+            return prev;
+          });
+        },
+        onDone: () => {
+          setIsStreaming(false);
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.streaming) return [...prev.slice(0, -1), { ...last, streaming: false }];
+            return prev;
+          });
+        },
+      });
+    },
+    [jobId, messages, isStreaming, file, sources, companyName]
+  );
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    sendMessage(input);
+  };
+
+  const handleStop = () => {
+    abortRef.current?.abort();
+    setIsStreaming(false);
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.streaming) return [...prev.slice(0, -1), { ...last, streaming: false }];
+      return prev;
+    });
+  };
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+
+      {/* ── Messages area ────────────────────────────── */}
+      <div className="flex-1 relative overflow-hidden">
+        <div className="absolute top-0 left-0 right-0 h-6 bg-gradient-to-b from-[#f8f8fa] to-transparent z-10 pointer-events-none" />
+        <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-[#f8f8fa] to-transparent z-10 pointer-events-none" />
+
+        <div ref={scrollRef} className="h-full overflow-y-auto px-5 py-5 viewer-scroll">
+
+          {/* ── Empty state: suggestions ──────────── */}
+          {messages.length === 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+              className="space-y-5 pt-1"
+            >
+              <div className="text-center">
+                <p className="text-[15px] font-medium text-gray-800 tracking-tight">
+                  Ask about this report
+                </p>
+                <p className="text-[11px] text-gray-300 mt-1.5 leading-relaxed">
+                  Get instant answers from the research analysis
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {AI_SUGGESTIONS.map((s, i) => {
+                  const Icon = s.icon;
+                  return (
+                    <motion.button
+                      key={s.text}
+                      onClick={() => sendMessage(s.text)}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.08 + i * 0.04, duration: 0.4 }}
+                      whileHover={{ scale: 1.02, y: -1 }}
+                      whileTap={{ scale: 0.97 }}
+                      className="flex flex-col items-start gap-2.5 p-3.5 rounded-[14px] bg-white ring-1 ring-black/[0.06] hover:ring-black/[0.12] hover:shadow-sm transition-all duration-200 text-left group"
+                    >
+                      <Icon className={`w-4 h-4 ${s.color} group-hover:opacity-100 opacity-60 transition-opacity`} />
+                      <span className="text-[11px] text-gray-400 group-hover:text-gray-600 transition-colors leading-snug">
+                        {s.text}
+                      </span>
+                    </motion.button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+
+          {/* ── Message list ─────────────────────────── */}
+          <div className="space-y-4">
+            {messages.map((msg) => (
+              <div key={msg.id}>
+                {msg.role === "user" ? (
+                  <motion.div
+                    className="flex justify-end mb-1"
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  >
+                    <div className="max-w-[85%] rounded-[16px] rounded-br-md bg-black/[0.04]"
+                      style={{ padding: "10px 14px" }}>
+                      <p className="text-[12px] text-gray-600 leading-relaxed whitespace-pre-wrap break-words">
+                        {msg.content}
+                      </p>
+                    </div>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    className="mb-1"
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  >
+                    {msg.content ? (
+                      <div className="max-w-none overflow-hidden">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={aiMd}>
+                          {msg.content}
+                        </ReactMarkdown>
+                        {msg.streaming && (
+                          <span className="inline-block w-[2px] h-[13px] bg-gray-400 ml-0.5 -mb-0.5 align-text-bottom animate-[blink_0.8s_ease-in-out_infinite]" />
+                        )}
+                      </div>
+                    ) : msg.streaming ? (
+                      <motion.div className="flex items-center gap-2.5 py-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                        <div className="relative w-4 h-4">
+                          <motion.div
+                            className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-400/20 to-purple-400/15"
+                            animate={{ scale: [1, 1.4, 1], opacity: [0.6, 0.2, 0.6] }}
+                            transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                          />
+                          <motion.div
+                            className="absolute inset-0.5 rounded-full bg-gradient-to-br from-blue-400/30 to-purple-400/25"
+                            animate={{ scale: [1, 1.2, 1] }}
+                            transition={{ duration: 2, repeat: Infinity, ease: "easeInOut", delay: 0.1 }}
+                          />
+                        </div>
+                        <span className="text-[11px] text-gray-300 font-light tracking-wide">Thinking</span>
+                      </motion.div>
+                    ) : null}
+
+                    {/* Copy button */}
+                    {msg.content && !msg.streaming && (
+                      <div className="flex items-center gap-1 mt-1">
+                        <button
+                          onClick={() => handleCopy(msg.id, msg.content)}
+                          className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] text-gray-300 hover:text-gray-500 hover:bg-black/[0.04] transition-all duration-200"
+                        >
+                          {copiedId === msg.id
+                            ? <><Check className="w-2.5 h-2.5 text-emerald-500/70" /><span className="text-emerald-500/70">Copied</span></>
+                            : <><Copy className="w-2.5 h-2.5" />Copy</>
+                          }
+                        </button>
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Error ────────────────────────────────────── */}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="shrink-0 px-4 pb-2"
+          >
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-red-50 ring-1 ring-red-200/60 text-[10px] text-red-500">
+              <AlertCircle className="w-3 h-3 shrink-0" />
+              <span className="truncate">{error}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Input area ───────────────────────────────── */}
+      <div className="shrink-0 px-4 pb-4 pt-2">
+        <div className="relative flex items-center rounded-2xl border border-black/[0.08] focus-within:border-black/[0.16] focus-within:ring-1 focus-within:ring-black/[0.04] bg-white transition-all duration-300 overflow-hidden shadow-sm">
+          <form onSubmit={handleSubmit} className="flex items-center w-full">
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!isStreaming) handleSubmit(e);
+                }
+              }}
+              placeholder="Ask about the report..."
+              className="flex-1 bg-transparent text-gray-700 placeholder-gray-300 text-[12px] outline-none px-4 py-3 tracking-[-0.01em]"
+              disabled={isStreaming}
+            />
+
+            <div className="pr-2.5">
+              {isStreaming ? (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-medium bg-black/[0.04] text-gray-400 hover:bg-black/[0.08] hover:text-gray-600 transition-all duration-200"
+                >
+                  <Square className="w-2 h-2 fill-current" />
+                  Stop
+                </button>
+              ) : input.trim() ? (
+                <motion.button
+                  type="submit"
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  className="flex items-center justify-center w-7 h-7 rounded-full bg-[#0a0a0a] text-white hover:bg-gray-800 transition-all duration-200 shadow-sm"
+                >
+                  <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.5} />
+                </motion.button>
+              ) : null}
+            </div>
+          </form>
+        </div>
+
+        <p className="text-center text-[8px] text-gray-300 mt-2 tracking-wide">
+          Answers based on report sources only
+        </p>
+      </div>
+
+      <style>{`
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+      `}</style>
+    </div>
+  );
+}
+
 
 /* ── Main component ──────────────────────────────────────── */
 export default function ReportViewer() {
@@ -1378,7 +1740,7 @@ export default function ReportViewer() {
       switch (e.key) {
         case "1": e.preventDefault(); setActiveTab("sources"); setPanelOpen(true); break;
         case "2": e.preventDefault(); setActiveTab("notes"); setPanelOpen(true); break;
-        case "3": e.preventDefault(); setActiveTab("tools"); setPanelOpen(true); break;
+        case "3": e.preventDefault(); setActiveTab("ai"); setPanelOpen(true); break;
         case "4": e.preventDefault(); setActiveTab("calc"); setPanelOpen(true); break;
         case "q": case "Q": e.preventDefault(); navigate("/Query"); break;
         case "Escape":
@@ -1655,7 +2017,7 @@ export default function ReportViewer() {
                     {[
                       { id: "sources", label: "Sources", icon: BookOpen, badge: sources.length > 0 ? sources.length : null, badgeColor: "bg-blue-500/12 text-blue-500" },
                       { id: "notes", label: "Notes", icon: PenLine, dot: !!notes },
-                      { id: "tools", label: "Tools", icon: Zap, badge: 18, badgeColor: "bg-purple-500/12 text-purple-500" },
+                      { id: "ai", label: "AI", icon: MessageCircle },
                       { id: "calc", label: "Calc", icon: Calculator },
                     ].map(tab => {
                       const Icon = tab.icon;
@@ -2753,80 +3115,15 @@ export default function ReportViewer() {
                     </div>
                   </div>
 
-                ) : activeTab === "tools" ? (
+                ) : activeTab === "ai" ? (
 
-                  /* ── Tools tab ─────────────────────── */
-                  <div className="flex-1 overflow-y-auto px-5 py-4 viewer-scroll">
-                    <motion.div
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                      className="space-y-5 pt-1"
-                    >
-                      <div className="text-center space-y-2">
-                        <div className="w-9 h-9 rounded-2xl bg-gradient-to-b from-black/[0.03] to-black/[0.06] flex items-center justify-center mx-auto ring-1 ring-black/[0.04]">
-                          <Zap className="w-4 h-4 text-gray-400" />
-                        </div>
-                        <div>
-                          <p className="text-[14px] font-semibold text-gray-800 tracking-[-0.02em]">
-                            Research Tools
-                          </p>
-                          <p className="text-[11px] text-gray-300 mt-1 leading-relaxed">
-                            {sources.length > 0
-                              ? `${sources.length} sources · Institutional-grade analysis`
-                              : "Institutional-grade analysis · Opens in Query"
-                            }
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-5">
-                        {TOOL_SECTIONS.map((section, si) => (
-                          <motion.div
-                            key={section.title}
-                            initial={{ opacity: 0, y: 6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.06 + si * 0.1, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-                          >
-                            <div className="flex items-center gap-2.5 px-3 mb-2">
-                              <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-300/80">{section.title}</span>
-                              <div className="flex-1 h-px bg-gradient-to-r from-black/[0.04] to-transparent" />
-                              <span className="text-[9px] font-mono text-gray-200">{section.tools.length}</span>
-                            </div>
-                            <div className="space-y-1">
-                              {section.tools.map((s, i) => {
-                                const Icon = s.icon;
-                                return (
-                                  <motion.button
-                                    key={s.label}
-                                    onClick={() => navigate("/Query", { state: { prompt: s.prompt, company: companyName, sources } })}
-                                    initial={{ opacity: 0, x: -8 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    transition={{ delay: 0.1 + si * 0.1 + i * 0.04, duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-                                    whileTap={{ scale: 0.98 }}
-                                    className="w-full flex items-start gap-3 px-3 py-3 rounded-xl hover:bg-black/[0.02] active:bg-black/[0.04] transition-all duration-200 text-left group"
-                                  >
-                                    <div className={`w-8 h-8 rounded-[10px] ${s.bg} flex items-center justify-center shrink-0 mt-0.5 ring-1 ring-black/[0.02] group-hover:ring-black/[0.06] transition-all`}>
-                                      <Icon className={`w-4 h-4 ${s.color} opacity-50 group-hover:opacity-90 transition-opacity`} />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <div className="text-[12.5px] font-medium text-gray-600 group-hover:text-gray-800 transition-colors tracking-[-0.01em] leading-tight">
-                                        {s.label}
-                                      </div>
-                                      <div className="text-[10.5px] text-gray-300 group-hover:text-gray-400 transition-colors mt-0.5 leading-snug">
-                                        {s.desc}
-                                      </div>
-                                    </div>
-                                    <ExternalLink className="w-3 h-3 text-gray-200 group-hover:text-gray-400 shrink-0 transition-all duration-300 opacity-0 group-hover:opacity-100 mt-1.5" />
-                                  </motion.button>
-                                );
-                              })}
-                            </div>
-                          </motion.div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  </div>
+                  /* ── AI Assistant tab ───────────────── */
+                  <InlineAssistant
+                    jobId={jobId}
+                    companyName={companyName}
+                    file={fileName}
+                    sources={sources}
+                  />
 
                 ) : (
 
@@ -2849,6 +3146,7 @@ export default function ReportViewer() {
             </motion.div>
           )}
         </AnimatePresence>
+
       </div>
 
       {/* ── Status bar ──────────────────────────────────── */}

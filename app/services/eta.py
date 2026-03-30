@@ -1,17 +1,11 @@
-"""ETA prediction v4 — stage-aware pace tracking.
+"""ETA prediction v5 — adaptive pace with elapsed crosscheck.
 
-Core insight: early stages are fast and inflate progress %, making naive
-pace extrapolation (elapsed / progress) always underestimate.  Instead, we
-track the actual duration of each completed stage, compute a pace factor
-(how fast this run is relative to baseline), and apply it to remaining stages.
+Two-signal approach for accurate ETA:
+1. Stage-based: uses baseline durations scaled by observed pace factor
+2. Elapsed-based: uses total_elapsed / progress_fraction as a crosscheck
 
-Algorithm:
-1. Build expected durations from baselines (or historical averages if available)
-2. For completed stages, compare actual vs expected → derive a pace factor
-3. For remaining stages, scale expected durations by the pace factor
-4. For the current stage, estimate remaining from its expected duration minus elapsed
-5. Sum everything for the raw ETA
-6. Smooth the output so the countdown never jumps wildly
+Blends both signals — early on trusts stage baselines more, later trusts
+elapsed extrapolation more as it becomes statistically reliable.
 
 Stages (aligned with backend progress calls):
   Starting → Company Info → Data Fetch → Extraction → Analysis
@@ -44,27 +38,32 @@ STAGE_ORDER = [
     "Complete",
 ]
 
-# Baseline durations in seconds — calibrated from observed runs.
-# These are the "prior" before any data from the current run.
+# Baseline durations in seconds — calibrated from observed single runs (2026-03).
+# Total ~250s (~4:10) — realistic for a typical fast-mode report.
 STAGE_BASELINES = {
-    "Starting":       3,
-    "Company Info":    6,
-    "Data Fetch":     30,
+    "Starting":       2,
+    "Company Info":    5,
+    "Data Fetch":     25,
     "Extraction":     15,
-    "Analysis":       20,
-    "Valuation":      25,
+    "Analysis":       18,
+    "Valuation":      22,
     "Peers":          15,
-    "Drafting":      100,
-    "Rendering":      25,
+    "Drafting":      110,
+    "Rendering":      20,
     "Complete":        0,
 }
 
-TOTAL_BASELINE = sum(STAGE_BASELINES.values())  # ~239s
+TOTAL_BASELINE = sum(STAGE_BASELINES.values())  # ~232s
+
+# Stages that are meaningful for pace estimation.
+# Starting & Company Info are always fast (CPU-bound) and shouldn't influence
+# pace prediction for API-bound stages like Drafting.
+_PACE_RELEVANT_STAGES = {"Data Fetch", "Extraction", "Analysis", "Valuation", "Peers", "Drafting", "Rendering"}
 
 # Progress % at end of each stage — proportional to baseline duration
 STAGE_ENDS = {
     "Starting":       5,
-    "Company Info":   12,
+    "Company Info":   10,
     "Data Fetch":     25,
     "Extraction":     35,
     "Analysis":       45,
@@ -74,6 +73,10 @@ STAGE_ENDS = {
     "Rendering":     100,
     "Complete":      100,
 }
+
+# Weight of each stage for pace calculation — heavier stages
+# are more informative about overall run speed.
+_STAGE_WEIGHT = {s: max(STAGE_BASELINES.get(s, 5), 3) for s in STAGE_ORDER}
 
 LOCK = threading.Lock()
 
@@ -114,41 +117,50 @@ def _expected_duration(stage: str) -> float:
         mid = len(s) // 2
         median = s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
         # Blend: 70% historical median + 30% baseline (prevents runaway drift)
-        return 0.7 * median + 0.3 * STAGE_BASELINES.get(stage, 15)
-    return float(STAGE_BASELINES.get(stage, 15))
+        return 0.7 * median + 0.3 * STAGE_BASELINES.get(stage, 10)
+    return float(STAGE_BASELINES.get(stage, 10))
 
 
 def _compute_pace_factor(stage_history: list) -> float:
     """Compute how fast this run is relative to expected durations.
 
-    Returns a multiplier: 1.0 = on pace, 1.5 = 50% slower, 0.8 = 20% faster.
-    Uses only stages with meaningful duration (>1s) to avoid noise.
+    Returns a multiplier: 1.0 = on pace, 1.5 = 50% slower, 0.5 = 50% faster.
+    Only uses API-bound stages (Data Fetch+) — Starting/Company Info are always
+    fast and would bias the estimate low.
     """
     if not stage_history:
         return 1.0
 
-    ratios = []
+    weighted_ratios = []
     for entry in stage_history:
         stage = entry.get("stage", "")
+        # Skip CPU-bound stages that don't predict API-bound stage speed
+        if stage not in _PACE_RELEVANT_STAGES:
+            continue
         actual = float(entry.get("duration", 0))
         expected = _expected_duration(stage)
-        if actual > 1 and expected > 1:
-            ratios.append(actual / expected)
+        if actual > 0.5 and expected > 0.5:
+            weight = _STAGE_WEIGHT.get(stage, 3)
+            ratio = actual / expected
+            weighted_ratios.append((ratio, weight))
 
-    if not ratios:
+    if not weighted_ratios:
         return 1.0
 
-    # Use median ratio (robust to outliers)
-    ratios.sort()
-    mid = len(ratios) // 2
-    median = ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+    # Weighted median
+    weighted_ratios.sort(key=lambda x: x[0])
+    total_weight = sum(w for _, w in weighted_ratios)
+    cumulative = 0
+    for ratio, weight in weighted_ratios:
+        cumulative += weight
+        if cumulative >= total_weight / 2:
+            return max(0.3, min(ratio, 3.0))
 
-    # Clamp to reasonable range (0.3x to 3.0x)
-    return max(0.3, min(median, 3.0))
+    return 1.0
 
 
 def _raw_eta(job) -> float | None:
-    """Compute raw ETA (remaining seconds) using stage-aware pace tracking."""
+    """Compute raw ETA (remaining seconds) using dual-signal approach."""
     step = getattr(job, "step", None)
     if not step or step == "Complete":
         return 0.0
@@ -171,9 +183,7 @@ def _raw_eta(job) -> float | None:
         # 3. Expected remaining for current stage
         expected_current = _expected_duration(step) * pace
         if elapsed_in_stage >= expected_current:
-            # Overrun: estimate proportionally more time needed
-            # The longer we've overrun, the less confident we are — add 30% of overrun
-            remaining_current = max(elapsed_in_stage * 0.3, 3.0)
+            remaining_current = max(elapsed_in_stage * 0.2, 2.0)
         else:
             remaining_current = expected_current - elapsed_in_stage
 
@@ -187,7 +197,9 @@ def _raw_eta(job) -> float | None:
         future_sum = sum(_expected_duration(s) * pace for s in future_stages
                          if s != "Complete")
 
-        # 5. Cross-check against total elapsed time
+        stage_eta = remaining_current + future_sum
+
+        # 5. Elapsed-based crosscheck using weighted stage position
         total_elapsed = 0.0
         started = getattr(job, "started_at", None)
         if started:
@@ -199,29 +211,37 @@ def _raw_eta(job) -> float | None:
             except Exception:
                 pass
 
-        raw = remaining_current + future_sum
+        # Compute weighted fraction done (using baseline weights, not progress %)
+        # This is more accurate than progress % because it accounts for heavy stages
+        completed_baseline = sum(
+            STAGE_BASELINES.get(e.get("stage", ""), 0) for e in stage_history
+        )
+        # Add partial current stage
+        current_baseline = STAGE_BASELINES.get(step, 10)
+        if current_baseline > 0 and elapsed_in_stage > 0:
+            current_frac = min(elapsed_in_stage / (current_baseline * max(pace, 0.3)), 0.95)
+            completed_baseline += current_baseline * current_frac
 
-        # When pace factor has little data (≤2 completed stages), the ETA
-        # relies mostly on baselines.  If a significant stage (baseline >5s)
-        # is overrunning, that's a signal this run is slower — bump future estimates.
-        stage_baseline = STAGE_BASELINES.get(step, 0)
-        if (len(stage_history) <= 2
-                and elapsed_in_stage > expected_current
-                and stage_baseline > 5):
-            # How much slower is this stage vs expected? Use that as ad-hoc pace.
-            adhoc_pace = elapsed_in_stage / (_expected_duration(step) or 15)
-            adhoc_pace = max(1.0, min(adhoc_pace, 3.0))  # only bump up, never down
-            # Re-compute future with the ad-hoc pace instead of the weak pace factor
-            future_sum = sum(_expected_duration(s) * adhoc_pace for s in future_stages
-                             if s != "Complete")
-            raw = remaining_current + future_sum
+        weight_done = completed_baseline / max(TOTAL_BASELINE, 1)
+        weight_done = max(0.01, min(weight_done, 0.99))
 
-        # Sanity: if we're in Drafting or later, ETA shouldn't be less than
-        # what Drafting alone would take
-        if step == "Drafting" and raw < 15:
-            raw = max(raw, 15)
+        elapsed_eta = None
+        if total_elapsed > 8 and weight_done > 0.05:
+            elapsed_eta = total_elapsed / weight_done * (1 - weight_done)
 
-        return max(2.0, min(raw, 600.0))
+        # 6. Blend: only use elapsed crosscheck after enough progress
+        # At early stages, trust baselines; after Extraction+, blend more
+        n_relevant_completed = sum(
+            1 for e in stage_history if e.get("stage") in _PACE_RELEVANT_STAGES
+        )
+        raw = stage_eta
+        if elapsed_eta is not None and n_relevant_completed >= 1:
+            # After 1+ relevant stage, start blending
+            elapsed_weight = min(0.7, n_relevant_completed * 0.2)
+            raw = (1 - elapsed_weight) * stage_eta + elapsed_weight * elapsed_eta
+
+        # Hard cap: ETA should never exceed 5 minutes for a single report
+        return max(2.0, min(raw, 300.0))
 
     except Exception:
         return None
@@ -231,7 +251,8 @@ def predict_eta(job) -> float | None:
     """ETA with smooth monotonic countdown.
 
     Uses per-job state so the displayed ETA ticks down steadily.
-    Server corrections are absorbed gradually — never jumps up wildly.
+    Server corrections are absorbed gradually — never jumps up wildly,
+    but corrections downward happen quickly.
     """
     raw = _raw_eta(job)
     if raw is None:
@@ -260,16 +281,16 @@ def predict_eta(job) -> float | None:
         stage_changed = job.step != state["step"]
 
         if raw <= expected:
-            # Ahead of schedule — let it drop faster
-            smoothed = 0.4 * expected + 0.6 * raw
+            # Ahead of schedule — drop fast (users love seeing ETA shrink)
+            smoothed = 0.3 * expected + 0.7 * raw
         elif stage_changed:
-            # Stage transition — allow moderate correction (up to 15s increase)
-            smoothed = expected + min(raw - expected, 15.0)
+            # Stage transition — allow moderate correction (up to 10s increase)
+            smoothed = expected + min(raw - expected, 10.0)
         else:
-            # Behind schedule within same stage — limit increase to 5s
-            smoothed = expected + min(raw - expected, 5.0)
+            # Behind schedule within same stage — limit increase to 3s
+            smoothed = expected + min(raw - expected, 3.0)
 
-        smoothed = max(2.0, min(smoothed, 600.0))
+        smoothed = max(2.0, min(smoothed, 300.0))
 
         state["eta"] = smoothed
         state["ts"] = now
