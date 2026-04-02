@@ -1,12 +1,26 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { motion } from "framer-motion";
-import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowUp } from "lucide-react";
+import NumberFlow, { useCanAnimate } from "@number-flow/react";
 import { fetchQuote, fetchPriceHistory } from "@/api/backend";
 
 const POLL_INTERVAL = 5000;
-const CHART_H = 120;
-const PAD = { top: 8, right: 8, bottom: 20, left: 8 };
-const VW = 400;
+
+const RANGES = [
+  { key: "1D", days: 1, interval: "5m", label: "1D" },
+  { key: "5D", days: 5, interval: "15m", label: "5D" },
+  { key: "1M", days: 30, interval: "30m", label: "1M" },
+  { key: "6M", days: 180, interval: "60m", label: "6M" },
+  { key: "YTD", days: 0, interval: "1d", label: "YTD" },
+  { key: "1Y", days: 365, interval: "1d", label: "1Y" },
+  { key: "5Y", days: 1825, interval: "1d", label: "5Y" },
+];
+
+function getYTDDays() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 1);
+  return Math.ceil((now - start) / 86400000);
+}
 
 function isTSEOpen() {
   const now = new Date();
@@ -18,18 +32,12 @@ function isTSEOpen() {
   return (t >= 540 && t <= 690) || (t >= 750 && t < 900);
 }
 
-function fmtPrice(p) {
-  if (p == null) return "\u2014";
-  return `\u00A5${Number(p).toLocaleString("en-US", { maximumFractionDigits: 1 })}`;
-}
+/* ── SVG Chart with gradient fill, hover crosshair ─── */
+const CHART_H = 180;
+const PAD = { top: 12, right: 12, bottom: 28, left: 12 };
+const VW = 500;
 
-function fmtPct(pct) {
-  if (pct == null) return "";
-  return `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
-}
-
-/* ── Pure SVG sparkline ─────────────────────────────────── */
-function Sparkline({ data, color, prevClose }) {
+function PriceChart({ data, color, referencePrice }) {
   const [hover, setHover] = useState(null);
   const svgRef = useRef(null);
 
@@ -38,7 +46,7 @@ function Sparkline({ data, color, prevClose }) {
   const { yMin, yMax } = useMemo(() => {
     const mn = Math.min(...closes);
     const mx = Math.max(...closes);
-    const pad = (mx - mn) * 0.12 || mx * 0.02;
+    const pad = (mx - mn) * 0.1 || mx * 0.02;
     return { yMin: mn - pad, yMax: mx + pad };
   }, [closes]);
 
@@ -75,19 +83,35 @@ function Sparkline({ data, color, prevClose }) {
   }, [linePath, points, plotH]);
 
   const refY = useMemo(() => {
-    if (prevClose == null) return null;
-    const pc = Number(prevClose);
+    if (referencePrice == null) return null;
+    const pc = Number(referencePrice);
     if (pc < yMin || pc > yMax) return null;
     return PAD.top + plotH - ((pc - yMin) / (yMax - yMin || 1)) * plotH;
-  }, [prevClose, yMin, yMax, plotH]);
+  }, [referencePrice, yMin, yMax, plotH]);
 
   const labels = useMemo(() => {
     if (data.length < 2) return [];
+    // Detect intraday data (dates contain HH:MM)
+    const isIntraday = (data[0].date || "").includes(":");
     const count = Math.min(5, data.length);
     const step = Math.max(Math.floor((data.length - 1) / (count - 1)), 1);
     const result = [];
     for (let i = 0; i < data.length; i += step) {
-      result.push({ x: points[i].x, text: (data[i].date || "").replace(/^\d{4}-/, "") });
+      const raw = data[i].date || "";
+      let short;
+      if (isIntraday) {
+        // Show "HH:MM" for intraday, or "MM-DD HH:MM" for multi-day intraday
+        const parts = raw.split(" ");
+        const time = parts[1] || "";
+        const date = (parts[0] || "").replace(/^\d{4}-/, "");
+        // For multi-day (5D), show date on first point of each day
+        const prevDate = i > 0 ? (data[i - step]?.date || "").split(" ")[0] : "";
+        const curDate = parts[0] || "";
+        short = prevDate !== curDate && i > 0 ? date : time;
+      } else {
+        short = raw.replace(/^\d{4}-/, "");
+      }
+      result.push({ x: points[i].x, text: short });
     }
     return result;
   }, [data, points]);
@@ -106,7 +130,7 @@ function Sparkline({ data, color, prevClose }) {
     setHover({ idx: closest, px: points[closest].x, py: points[closest].y });
   }, [points]);
 
-  const gradId = `sp-${color.replace("#", "")}`;
+  const gradId = `chart-grad-${color.replace("#", "")}`;
 
   return (
     <svg
@@ -115,33 +139,33 @@ function Sparkline({ data, color, prevClose }) {
       height={CHART_H}
       viewBox={`0 0 ${VW} ${CHART_H}`}
       preserveAspectRatio="none"
-      className="block"
+      className="block cursor-crosshair"
       style={{ display: "block", overflow: "visible", touchAction: "none" }}
       onPointerMove={handlePointerMove}
       onPointerLeave={() => setHover(null)}
     >
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.15" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
+          <stop offset="0%" stopColor={color} stopOpacity="0.18" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.01" />
         </linearGradient>
       </defs>
 
       {refY != null && (
         <line x1={PAD.left} y1={refY} x2={VW - PAD.right} y2={refY}
-          stroke="rgba(0,0,0,0.08)" strokeDasharray="3 3" />
+          stroke="rgba(0,0,0,0.06)" strokeDasharray="4 3" strokeWidth="1" />
       )}
 
       {areaPath && <path d={areaPath} fill={`url(#${gradId})`} />}
       {linePath && (
-        <path d={linePath} fill="none" stroke={color} strokeWidth="1.5"
+        <path d={linePath} fill="none" stroke={color} strokeWidth="2"
           strokeLinecap="round" strokeLinejoin="round"
           vectorEffect="non-scaling-stroke" />
       )}
 
       {labels.map((l, i) => (
-        <text key={i} x={l.x} y={CHART_H - 4} textAnchor="middle"
-          fill="rgba(0,0,0,0.2)" fontSize="9" fontFamily="system-ui, sans-serif">
+        <text key={i} x={l.x} y={CHART_H - 6} textAnchor="middle"
+          fill="rgba(0,0,0,0.25)" fontSize="10" fontFamily="system-ui, sans-serif">
           {l.text}
         </text>
       ))}
@@ -149,24 +173,33 @@ function Sparkline({ data, color, prevClose }) {
       {hover && (
         <>
           <line x1={hover.px} y1={PAD.top} x2={hover.px} y2={PAD.top + plotH}
-            stroke="rgba(0,0,0,0.08)" strokeWidth="1" />
-          <circle cx={hover.px} cy={hover.py} r="3.5" fill={color} stroke="white" strokeWidth="2" />
+            stroke="rgba(0,0,0,0.12)" strokeWidth="1" />
+          <circle cx={hover.px} cy={hover.py} r="4" fill={color} stroke="white" strokeWidth="2" />
           <rect
-            x={Math.max(2, Math.min(hover.px - 42, VW - 86))}
-            y={Math.max(2, hover.py - 42)}
-            width="84" height="36" rx="8"
-            fill="white" stroke="rgba(0,0,0,0.08)" strokeWidth="0.5" />
+            x={Math.max(2, Math.min(hover.px - 48, VW - 98))}
+            y={Math.max(2, hover.py - 48)}
+            width="96" height="38" rx="8"
+            fill="white" stroke="rgba(0,0,0,0.08)" strokeWidth="0.5"
+            filter="drop-shadow(0 2px 4px rgba(0,0,0,0.06))" />
           <text
-            x={Math.max(44, Math.min(hover.px, VW - 44))}
-            y={Math.max(16, hover.py - 26)}
-            textAnchor="middle" fill="rgba(0,0,0,0.35)" fontSize="9" fontFamily="system-ui, sans-serif">
-            {(data[hover.idx]?.date || "").replace(/^\d{4}-/, "")}
+            x={Math.max(50, Math.min(hover.px, VW - 50))}
+            y={Math.max(18, hover.py - 32)}
+            textAnchor="middle" fill="rgba(0,0,0,0.4)" fontSize="10" fontFamily="system-ui, sans-serif">
+            {(() => {
+              const raw = data[hover.idx]?.date || "";
+              if (raw.includes(":")) {
+                // Intraday: show "MM-DD HH:MM"
+                const parts = raw.split(" ");
+                return (parts[0] || "").replace(/^\d{4}-/, "") + " " + (parts[1] || "");
+              }
+              return raw;
+            })()}
           </text>
           <text
-            x={Math.max(44, Math.min(hover.px, VW - 44))}
-            y={Math.max(29, hover.py - 13)}
-            textAnchor="middle" fill="rgba(0,0,0,0.85)" fontSize="11" fontWeight="600" fontFamily="system-ui, sans-serif">
-            {fmtPrice(closes[hover.idx])}
+            x={Math.max(50, Math.min(hover.px, VW - 50))}
+            y={Math.max(33, hover.py - 17)}
+            textAnchor="middle" fill="rgba(0,0,0,0.85)" fontSize="13" fontWeight="600" fontFamily="system-ui, sans-serif">
+            ¥{Number(closes[hover.idx]).toLocaleString("en-US", { maximumFractionDigits: 1 })}
           </text>
         </>
       )}
@@ -174,7 +207,42 @@ function Sparkline({ data, color, prevClose }) {
   );
 }
 
-/* ── Main Component ─────────────────────────────────────── */
+/* ── Time Range Tabs ──────────────────────────────────── */
+function RangeTabs({ active, onChange, loading }) {
+  return (
+    <div className="flex gap-0.5 px-1 py-1 bg-black/[0.02] rounded-lg">
+      {RANGES.map(r => {
+        const isActive = active === r.key;
+        return (
+          <button
+            key={r.key}
+            onClick={() => onChange(r.key)}
+            disabled={loading}
+            className={`relative px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors duration-200
+              ${isActive
+                ? "text-black/90"
+                : "text-black/35 hover:text-black/55"
+              }
+              ${loading ? "opacity-50" : ""}
+            `}
+          >
+            {isActive && (
+              <motion.div
+                layoutId="range-indicator"
+                className="absolute inset-0 bg-white rounded-md shadow-sm"
+                style={{ zIndex: 0 }}
+                transition={{ type: "spring", bounce: 0.15, duration: 0.4 }}
+              />
+            )}
+            <span className="relative z-10">{r.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── Main Component ───────────────────────────────────── */
 export default function LivePriceTicker({
   stockCode,
   initialPrice,
@@ -186,34 +254,53 @@ export default function LivePriceTicker({
   const [price, setPrice] = useState(initialPrice);
   const [changePct, setChangePct] = useState(initialChangePct);
   const [prevClose, setPrevClose] = useState(previousClose);
-  const [flash, setFlash] = useState(null);
   const [isLive, setIsLive] = useState(
     initialMarketState === "REGULAR" || isTSEOpen()
   );
-  const [fetchedHistory, setFetchedHistory] = useState(null);
-  const prevPriceRef = useRef(initialPrice);
-  const intervalRef = useRef(null);
-  const flashTimeoutRef = useRef(null);
-  const mountedRef = useRef(true);
+  const [activeRange, setActiveRange] = useState("1M");
+  const [rangeData, setRangeData] = useState({});
+  const [loadingRange, setLoadingRange] = useState(false);
+  const [revealed, setRevealed] = useState(false);
 
+  const mountedRef = useRef(true);
+  const intervalRef = useRef(null);
+  const fetchedRangesRef = useRef(new Set());
+  const canAnimate = useCanAnimate();
+
+  // Reveal animation after mount
+  useEffect(() => {
+    const t = setTimeout(() => setRevealed(true), 100);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Compute change values relative to selected range
+  const rangeChange = useMemo(() => {
+    const currentData = rangeData[activeRange];
+    if (!currentData || currentData.length < 2 || price == null) {
+      return { value: price ? Number(price) * (changePct || 0) / 100 : 0, pct: changePct || 0 };
+    }
+    const firstClose = Number(currentData[0].close);
+    const currentPrice = Number(price);
+    if (!firstClose) return { value: 0, pct: 0 };
+    const diff = currentPrice - firstClose;
+    const pct = (diff / firstClose) * 100;
+    return { value: diff, pct };
+  }, [activeRange, rangeData, price, changePct]);
+
+  const isPositive = rangeChange.pct >= 0;
+  const chartColor = isPositive ? "#059669" : "#ef4444";
+  const accentBg = isPositive ? "bg-emerald-500" : "bg-red-500";
+
+  // Poll live price
   const poll = useCallback(async () => {
     if (!mountedRef.current) return;
     try {
       const quote = await fetchQuote(stockCode);
       if (!quote || !mountedRef.current) return;
-      const newPrice = quote.price;
-      const prev = prevPriceRef.current;
-      if (newPrice != null && prev != null) {
-        if (newPrice > prev) setFlash("up");
-        else if (newPrice < prev) setFlash("down");
-      }
-      setPrice(newPrice);
-      setChangePct(quote.change_pct);
+      if (quote.price != null) setPrice(quote.price);
+      if (quote.change_pct != null) setChangePct(quote.change_pct);
       if (quote.previous_close) setPrevClose(quote.previous_close);
-      prevPriceRef.current = newPrice;
       if (quote.market_state && quote.market_state !== "REGULAR" && !isTSEOpen()) setIsLive(false);
-      if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
-      flashTimeoutRef.current = setTimeout(() => { if (mountedRef.current) setFlash(null); }, 800);
     } catch {}
   }, [stockCode]);
 
@@ -224,104 +311,139 @@ export default function LivePriceTicker({
       if (!isTSEOpen()) { clearInterval(intervalRef.current); setIsLive(false); return; }
       poll();
     }, POLL_INTERVAL);
-    return () => { clearInterval(intervalRef.current); if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current); };
+    return () => clearInterval(intervalRef.current);
   }, [isLive, stockCode, poll]);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
 
+  // priceHistory from report is not used for pre-seeding — each range
+  // fetches its own data from the API with the correct interval and date window.
+
+  // Fetch data when range changes
   useEffect(() => {
     if (!stockCode) return;
-    const sseValid = priceHistory && Array.isArray(priceHistory) &&
-      priceHistory.filter(p => p && p.close != null && p.close !== "" && Number(p.close) > 0).length >= 2;
-    if (sseValid) return;
+    if (fetchedRangesRef.current.has(activeRange)) return;
+    fetchedRangesRef.current.add(activeRange);
 
     let cancelled = false;
-    fetchPriceHistory(stockCode, 90).then(data => {
+    setLoadingRange(true);
+
+    const r = RANGES.find(r => r.key === activeRange);
+    const days = r.key === "YTD" ? getYTDDays() : r.days;
+    const interval = r.interval || "1d";
+
+    fetchPriceHistory(stockCode, days, interval).then(data => {
       if (cancelled || !mountedRef.current) return;
       if (Array.isArray(data) && data.length >= 2) {
-        setFetchedHistory(data);
+        setRangeData(prev => ({ ...prev, [activeRange]: data }));
       }
-    }).catch(() => {});
+      setLoadingRange(false);
+    }).catch(() => { if (!cancelled) setLoadingRange(false); });
+
     return () => { cancelled = true; };
-  }, [stockCode, priceHistory]);
+  }, [activeRange, stockCode]);
 
-  const chartData = useMemo(() => {
-    if (priceHistory && Array.isArray(priceHistory) && priceHistory.length > 0) {
-      const valid = priceHistory.filter(p => p && p.close != null && p.close !== "" && Number(p.close) > 0);
-      if (valid.length >= 2) return valid;
-    }
-    if (fetchedHistory && Array.isArray(fetchedHistory) && fetchedHistory.length > 0) {
-      const valid = fetchedHistory.filter(p => p && p.close != null && Number(p.close) > 0);
-      if (valid.length >= 2) return valid;
-    }
-    return [];
-  }, [priceHistory, fetchedHistory]);
+  const currentChartData = rangeData[activeRange] || [];
+  const hasChart = currentChartData.length >= 2;
 
-  const isPositive = changePct != null && changePct >= 0;
-  const isNegative = changePct != null && changePct < 0;
-  const priceColor = isPositive ? "text-emerald-600" : isNegative ? "text-red-500" : "text-black/60";
-  const pctColor = isPositive ? "text-emerald-600/70" : isNegative ? "text-red-500/70" : "text-black/30";
-  const flashBg = flash === "up" ? "bg-emerald-50" : flash === "down" ? "bg-red-50" : "bg-white";
-  const borderClr = flash === "up" ? "border-emerald-200/60" : flash === "down" ? "border-red-200/60" : "border-black/[0.06]";
-  const chartColor = isPositive ? "#059669" : isNegative ? "#ef4444" : "#64748b";
-  const TrendIcon = isPositive ? TrendingUp : isNegative ? TrendingDown : Minus;
-  const hasChart = chartData.length >= 2;
+  // Reference price for dotted line: first close in current range
+  const refPrice = hasChart ? Number(currentChartData[0].close) : prevClose;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0, y: 12, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-      className={`rounded-2xl border transition-all duration-700 shadow-sm ${flashBg} ${borderClr}`}
-      style={{ maxWidth: 420 }}
+      className="rounded-2xl border border-black/[0.06] bg-white shadow-sm overflow-hidden"
+      style={{ maxWidth: 480 }}
     >
-      {/* Price header */}
-      <div className="flex items-center gap-3 px-4 pt-3 pb-2">
-        <div className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 ${
-          isPositive ? "bg-emerald-100" : isNegative ? "bg-red-100" : "bg-black/[0.03]"
-        }`}>
-          <TrendIcon className={`w-3.5 h-3.5 ${priceColor}`} />
+      {/* ── Price Header ── */}
+      <div className="px-5 pt-4 pb-3">
+        {/* Price */}
+        <div className="flex items-baseline gap-3">
+          <NumberFlow
+            value={revealed ? Number(price) : 0}
+            format={{ style: "currency", currency: "JPY", maximumFractionDigits: 1 }}
+            className="text-[28px] font-semibold tracking-tight text-black/90 tabular-nums"
+            transformTiming={{ duration: 1200, easing: "cubic-bezier(0.16, 1, 0.3, 1)" }}
+            spinTiming={{ duration: 1200, easing: "cubic-bezier(0.16, 1, 0.3, 1)" }}
+          />
         </div>
-        <div className="flex flex-col min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <motion.span key={price}
-              initial={{ opacity: 0.6, y: flash === "up" ? 4 : flash === "down" ? -4 : 0 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-              className={`text-[16px] font-semibold tabular-nums tracking-tight ${priceColor}`}>
-              {fmtPrice(price)}
+
+        {/* Change badge */}
+        <div className="flex items-center gap-2 mt-1.5">
+          <motion.span
+            className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-white text-[12px] font-medium ${accentBg}`}
+            layout={canAnimate}
+            transition={{ layout: { duration: 0.5, bounce: 0, type: "spring" } }}
+          >
+            <motion.span
+              animate={{ rotate: isPositive ? 0 : 180 }}
+              transition={{ duration: 0.3 }}
+              className="flex items-center"
+            >
+              <ArrowUp className="w-3 h-3" strokeWidth={2.5} />
             </motion.span>
-            <span className={`text-[12px] font-medium tabular-nums ${pctColor}`}>
-              {fmtPct(changePct)}
+            <NumberFlow
+              value={revealed ? Math.abs(rangeChange.value) : 0}
+              format={{ maximumFractionDigits: 1 }}
+              className="tabular-nums"
+              transformTiming={{ duration: 800, easing: "cubic-bezier(0.16, 1, 0.3, 1)" }}
+              spinTiming={{ duration: 800, easing: "cubic-bezier(0.16, 1, 0.3, 1)" }}
+            />
+          </motion.span>
+          <span className={`text-[12px] font-medium tabular-nums ${isPositive ? "text-emerald-600" : "text-red-500"}`}>
+            <NumberFlow
+              value={revealed ? rangeChange.pct / 100 : 0}
+              format={{ style: "percent", minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: "always" }}
+              transformTiming={{ duration: 800, easing: "cubic-bezier(0.16, 1, 0.3, 1)" }}
+              spinTiming={{ duration: 800, easing: "cubic-bezier(0.16, 1, 0.3, 1)" }}
+            />
+          </span>
+          {isLive ? (
+            <span className="inline-flex items-center gap-1 text-[10px] text-black/30 ml-1">
+              <motion.span className="w-1.5 h-1.5 rounded-full bg-emerald-500"
+                animate={{ opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }} />
+              Live
             </span>
-          </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            {prevClose && (
-              <span className="text-[10px] text-black/25 tabular-nums">prev close {fmtPrice(prevClose)}</span>
-            )}
-            {isLive ? (
-              <span className="inline-flex items-center gap-1 text-[10px] text-black/25">
-                <motion.span className="w-1 h-1 rounded-full bg-emerald-500"
-                  animate={{ opacity: [0.3, 1, 0.3] }}
-                  transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }} />
-                live
-              </span>
-            ) : (
-              <span className="text-[10px] text-black/15">market closed</span>
-            )}
-          </div>
+          ) : (
+            <span className="text-[10px] text-black/20 ml-1">Closed</span>
+          )}
         </div>
-        {hasChart && (
-          <span className="text-[10px] text-black/20 tabular-nums shrink-0">{chartData.length}d</span>
-        )}
       </div>
 
-      {/* Pure SVG Chart */}
-      {hasChart && (
-        <div className="px-1 pb-2">
-          <Sparkline data={chartData} color={chartColor} prevClose={prevClose} />
-        </div>
-      )}
+      {/* ── Chart ── */}
+      <div className="px-2 relative" style={{ minHeight: CHART_H }}>
+        <AnimatePresence mode="wait">
+          {hasChart ? (
+            <motion.div
+              key={activeRange}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25 }}
+            >
+              <PriceChart data={currentChartData} color={chartColor} referencePrice={refPrice} />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="loading"
+              className="flex items-center justify-center"
+              style={{ height: CHART_H }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+            >
+              <div className="w-5 h-5 border-2 border-black/10 border-t-black/40 rounded-full animate-spin" />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* ── Range Tabs ── */}
+      <div className="px-3 pb-3 pt-1">
+        <RangeTabs active={activeRange} onChange={setActiveRange} loading={loadingRange} />
+      </div>
     </motion.div>
   );
 }

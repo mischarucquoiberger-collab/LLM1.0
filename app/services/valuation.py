@@ -30,6 +30,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -1481,8 +1482,31 @@ class ValuationEngine:
             return None
         return _latest_price_from_quotes(prices)
 
+    def _load_ticker_cache(self, code: str):
+        """Load cached ticker data (financials + price) with 24h TTL."""
+        cache_path = self.cache_dir / f"ticker_{code}.json"
+        if not cache_path.exists():
+            return None
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            cached_at = dt.datetime.fromisoformat(data.get("cached_at", "2000-01-01"))
+            if (dt.datetime.now() - cached_at).total_seconds() > 24 * 3600:
+                return None
+            return data
+        except Exception:
+            return None
+
+    def _save_ticker_cache(self, code: str, data: dict):
+        """Save ticker data to cache."""
+        data["cached_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        cache_path = self.cache_dir / f"ticker_{code}.json"
+        try:
+            cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
     def _build_training_set(self, max_tickers, on_event=None):
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time as _time
         columns = [
             "op_margin", "net_margin", "roe", "roa", "leverage",
             "fcf_margin", "rev_growth", "op_growth", "ni_growth",
@@ -1490,17 +1514,36 @@ class ValuationEngine:
         X, y, multiples, peer_samples = [], [], [], []
         universe = self._list_universe(max_tickers)
 
+        # Throttle: enforce ~1 req/s to stay under J-Quants rate limit
+        _last_api_call = [0.0]
+
+        def _throttled_api(fn, *args, **kwargs):
+            elapsed = _time.monotonic() - _last_api_call[0]
+            if elapsed < 1.0:
+                _time.sleep(1.0 - elapsed)
+            _last_api_call[0] = _time.monotonic()
+            return fn(*args, **kwargs)
+
         def _process_ticker(info):
             code = info.get("Code") or info.get("code")
             if not code:
                 return None
-            try:
-                fin_payload = self.jquants.get_financials(code)
-            except Exception:
+
+            # Check per-ticker cache first
+            cached = self._load_ticker_cache(code)
+            if cached and cached.get("result"):
+                return cached["result"]
+            if cached and cached.get("skip"):
                 return None
+
+            try:
+                fin_payload = _throttled_api(self.jquants.get_financials, code)
+            except Exception:
+                return None  # transient API error — don't cache
             rows = _extract_financial_rows(fin_payload)
             latest, prev = _extract_latest_metrics(rows)
             if not latest:
+                self._save_ticker_cache(code, {"skip": True})
                 return None
             latest = _annualize_row(latest)
             if prev:
@@ -1508,15 +1551,20 @@ class ValuationEngine:
             features = _build_feature_vector(latest, prev)
             row = _features_to_array(features, columns)
             if any(np.isnan(row)):
+                self._save_ticker_cache(code, {"skip": True})
                 return None
-            price = self._fetch_latest_price(code)
+            try:
+                price = _throttled_api(self._fetch_latest_price, code)
+            except Exception:
+                price = None
             if price is None or price <= 0:
-                return None
+                return None  # price fetch failed — don't cache, may be transient
             shares = _extract_shares(info) or 0.0
             mcap = _extract_market_cap(info)
             if mcap is None and shares:
                 mcap = shares * price
             if mcap is None or mcap <= 0:
+                self._save_ticker_cache(code, {"skip": True})
                 return None
             eq = latest.get("equity")
             ni = latest.get("net_income")
@@ -1529,6 +1577,7 @@ class ValuationEngine:
             elif rev and rev > 0:
                 mult = mcap / rev; mt = "P/S"
             else:
+                self._save_ticker_cache(code, {"skip": True})
                 return None
             sector = info.get("Sector33CodeName") or info.get("Sector17CodeName") or "Unknown"
             # Compute EV/EBITDA for this peer
@@ -1538,45 +1587,60 @@ class ValuationEngine:
                 debt = _net_debt(latest)
                 peer_ev = mcap + debt
                 ev_ebitda_mult = peer_ev / ebitda_val
-            return {"row": row, "multiple": float(mult), "code": code,
+            result = {"row": [float(v) for v in row], "multiple": float(mult), "code": code,
                     "sector": sector, "multiple_type": mt,
-                    "ev_ebitda": ev_ebitda_mult}
+                    "ev_ebitda": float(ev_ebitda_mult) if ev_ebitda_mult is not None else None}
+            self._save_ticker_cache(code, {"result": result})
+            return result
 
-        with ThreadPoolExecutor(max_workers=20) as pool:
-            futs = {pool.submit(_process_ticker, info): idx for idx, info in enumerate(universe)}
-            done_count = 0
-            for future in as_completed(futs):
-                done_count += 1
-                if on_event and done_count % 20 == 0:
-                    on_event("valuation", f"Sampling {done_count}/{len(universe)} tickers", {})
-                try:
-                    result = future.result()
-                except Exception:
-                    continue
-                if result is None:
-                    continue
-                X.append(result["row"])
-                y.append(result["multiple"])
-                multiples.append(result["multiple"])
+        # Process sequentially to stay under J-Quants rate limits.
+        # Early-exit once we have enough usable samples (2× min to be safe).
+        enough = settings.ml_min_samples * 2
+        for idx, info in enumerate(universe):
+            if on_event and idx % 10 == 0 and idx > 0:
+                on_event("valuation", f"Sampling {idx}/{len(universe)} tickers", {})
+            try:
+                result = _process_ticker(info)
+            except Exception:
+                continue
+            if result is None:
+                continue
+            X.append(result["row"])
+            y.append(result["multiple"])
+            multiples.append(result["multiple"])
+            peer_samples.append({
+                "code": result["code"], "sector": result["sector"],
+                "multiple_type": result["multiple_type"],
+                "multiple_value": result["multiple"],
+            })
+            if result.get("ev_ebitda") is not None:
                 peer_samples.append({
                     "code": result["code"], "sector": result["sector"],
-                    "multiple_type": result["multiple_type"],
-                    "multiple_value": result["multiple"],
+                    "multiple_type": "EV/EBITDA",
+                    "multiple_value": result["ev_ebitda"],
                 })
-                # Store EV/EBITDA as a separate peer sample for the ev_ebitda method
-                if result.get("ev_ebitda") is not None:
-                    peer_samples.append({
-                        "code": result["code"], "sector": result["sector"],
-                        "multiple_type": "EV/EBITDA",
-                        "multiple_value": result["ev_ebitda"],
-                    })
+            # Early exit once we have enough samples
+            if len(y) >= enough:
+                break
         self._peer_samples = peer_samples
         return X, y, columns, multiples
 
     def train_model(self, on_event=None):
+        """Return cached model if available. Never train inline during report generation.
+
+        Use ``train_model_background()`` (e.g. on server startup) to populate
+        the cache.  This keeps report generation fast by avoiding the 150s+
+        J-Quants rate-limit penalty.
+        """
         meta_cached, model_cached = self._load_cached_model()
         if meta_cached and model_cached:
             return meta_cached, model_cached
+        # No cached model — don't block the report; return None so ML method
+        # is skipped (the LLM advisor will assign weight 0).
+        return None, None
+
+    def _train_model_sync(self, on_event=None):
+        """Actually train the model (slow, ~60-120s due to J-Quants rate limits)."""
         X, y, columns, _ = self._build_training_set(settings.ml_max_tickers, on_event=on_event)
         if len(y) < settings.ml_min_samples:
             return None, None
@@ -1602,6 +1666,19 @@ class ValuationEngine:
         self._save_cached_model(meta, model)
         return meta, model
 
+    def train_model_background(self):
+        """Start model training in a background daemon thread.
+
+        Call once at server startup.  The trained model is cached for
+        ``settings.ml_cache_days`` days.  Subsequent ``train_model()`` calls
+        return the cached result instantly.
+        """
+        meta, model = self._load_cached_model()
+        if meta and model:
+            return  # already cached
+        t = threading.Thread(target=self._train_model_sync, daemon=True)
+        t.start()
+
     # -------------------------------------------------------------------
     # Targeted sector-peer fetching from local universe
     # -------------------------------------------------------------------
@@ -1611,7 +1688,7 @@ class ValuationEngine:
         stock_code: str,
         sector: str,
         on_event=None,
-        max_peers: int = 20,
+        max_peers: int = 8,
     ) -> List[Dict[str, Any]]:
         """Fetch real P/E, P/B, EV/EBITDA multiples for same-sector peers.
 
@@ -1645,86 +1722,82 @@ class ValuationEngine:
         if on_event:
             on_event("valuation", f"Fetching {len(peers)} sector peer multiples", {})
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time as _time
 
         peer_samples: List[Dict[str, Any]] = []
 
-        def _fetch_peer(peer_info):
+        for pidx, peer_info in enumerate(peers):
             code = peer_info["code"]
             try:
+                _time.sleep(1.0)  # throttle to avoid 429
                 fin = self.jquants.get_financials(code)
             except Exception:
-                return None
+                continue
             rows = _extract_financial_rows(fin)
             if not rows:
-                return None
-            latest = _annualize_row(rows[0])
+                continue
+            raw_latest = rows[0]
+            latest = _annualize_row(raw_latest)
+            _time.sleep(1.0)
             p = self._fetch_latest_price(code)
             if not p or p <= 0:
-                return None
-            # Try to get shares from listed info
-            try:
-                info_payload = self.jquants._get(
-                    settings.jquants_company_endpoint,
-                    params={"code": code},
-                )
-                info_list = info_payload.get("info") or info_payload.get("data") or []
-                info_item = info_list[0] if isinstance(info_list, list) and info_list else {}
-            except Exception:
-                info_item = {}
-            shares = _extract_shares(info_item)
-            mcap = _extract_market_cap(info_item)
-            if mcap is None and shares:
-                mcap = shares * p
-            if not mcap or mcap <= 0:
-                return None
+                continue
+            # Derive shares from NI/EPS (avoids extra company_info API call)
+            ni_raw = raw_latest.get("net_income")
+            eps_val = raw_latest.get("eps")
+            if eps_val is None:
+                stmts = fin.get("statements") or fin.get("data") or []
+                if isinstance(stmts, list) and stmts:
+                    eps_val = _to_float(stmts[0].get("EarningsPerShare") or stmts[0].get("EPS"))
+            shares = None
+            if ni_raw and eps_val and eps_val > 0:
+                shares = abs(ni_raw / eps_val)
+            # Fallback: equity / BPS
+            if not shares or shares <= 0:
+                eq = latest.get("equity")
+                stmts = fin.get("statements") or fin.get("data") or []
+                bps_val = None
+                if isinstance(stmts, list) and stmts:
+                    bps_val = _to_float(stmts[0].get("BPS") or stmts[0].get("BookValuePerShare"))
+                if eq and bps_val and bps_val > 0:
+                    shares = eq / bps_val
+            if not shares or shares <= 0:
+                continue
+            mcap = shares * p
+            if mcap <= 0:
+                continue
 
-            results = []
             ni = latest.get("net_income")
             eq = latest.get("equity")
             rev = latest.get("revenue")
             ebitda = latest.get("ebitda")
             peer_sector = peer_info.get("sector33", sector)
 
-            # P/E
             if ni and ni > 0:
                 pe = mcap / ni
                 if 1.0 < pe < 100.0:
-                    results.append({"code": code, "sector": peer_sector,
+                    peer_samples.append({"code": code, "sector": peer_sector,
                                     "multiple_type": "P/E", "multiple_value": pe})
-            # P/B
             if eq and eq > 0:
                 pb = mcap / eq
                 if 0.1 < pb < 20.0:
-                    results.append({"code": code, "sector": peer_sector,
+                    peer_samples.append({"code": code, "sector": peer_sector,
                                     "multiple_type": "P/B", "multiple_value": pb})
-            # P/S
             if rev and rev > 0:
                 ps = mcap / rev
                 if 0.05 < ps < 30.0:
-                    results.append({"code": code, "sector": peer_sector,
+                    peer_samples.append({"code": code, "sector": peer_sector,
                                     "multiple_type": "P/S", "multiple_value": ps})
-            # EV/EBITDA
             if ebitda and ebitda > 0 and eq:
                 debt = _net_debt(latest)
                 ev = mcap + debt
                 ev_ebitda = ev / ebitda
                 if 1.0 < ev_ebitda < 50.0:
-                    results.append({"code": code, "sector": peer_sector,
+                    peer_samples.append({"code": code, "sector": peer_sector,
                                     "multiple_type": "EV/EBITDA", "multiple_value": ev_ebitda})
-            return results
-
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            futs = {pool.submit(_fetch_peer, p): p for p in peers}
-            done = 0
-            for future in as_completed(futs):
-                done += 1
-                try:
-                    result = future.result()
-                except Exception:
-                    continue
-                if result:
-                    peer_samples.extend(result)
+            # Early exit once we have enough peer data points
+            if len(peer_samples) >= 20:
+                break
 
         # Cache results
         if peer_samples:

@@ -1538,15 +1538,28 @@ class EdinetClient:
         filer_name: str | None = None
         max_periods = 8
 
-        for idx, doc in enumerate(ordered, start=1):
+        # ── SPEED: Download + parse all docs in parallel ──────────────
+        # Instead of sequential download→parse→download→parse (2-5s per doc),
+        # fire all downloads concurrently so network I/O overlaps.
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _download_and_parse(doc: EdinetDocument):
+            zip_bytes = self.download_xbrl_zip(doc.doc_id)
+            return self._extract_xbrl_metrics(zip_bytes)
+
+        # Pre-fetch all docs in parallel (up to 8 workers)
+        with ThreadPoolExecutor(max_workers=min(8, total)) as dl_pool:
+            futures = [(doc, dl_pool.submit(_download_and_parse, doc)) for doc in ordered]
+
+        # Process results in priority order (sort_key order preserved)
+        for idx, (doc, fut) in enumerate(futures, start=1):
             if on_scan:
                 try:
                     on_scan(doc, idx, total)
                 except Exception:
                     pass
             try:
-                zip_bytes = self.download_xbrl_zip(doc.doc_id)
-                rows = self._extract_xbrl_metrics(zip_bytes)
+                rows = fut.result()
                 if rows:
                     if not filer_name:
                         filer_name = doc.filer_name

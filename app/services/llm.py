@@ -16,6 +16,7 @@ class LlmClient:
     def __init__(self) -> None:
         self.api_key = settings.openai_api_key
         self.model = settings.openai_model
+        self.anthropic_api_key = settings.anthropic_api_key
 
         try:
             from openai import OpenAI
@@ -23,6 +24,13 @@ class LlmClient:
             raise RuntimeError("OpenAI client is not installed. Add openai to requirements.") from exc
 
         self._client = OpenAI(api_key=self.api_key)
+        self._anthropic_client = None
+
+    def _get_anthropic_client(self):
+        if self._anthropic_client is None:
+            import anthropic
+            self._anthropic_client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+        return self._anthropic_client
 
     def _create_completion(self, system_prompt: str, user_prompt: str) -> str:
         response = self._client.chat.completions.create(
@@ -198,60 +206,52 @@ These are non-recommendation outputs; do not issue a rating or target price.
         return self._create_completion(system_prompt, base_context)
 
     def generate_dashboard_narrative(self, prompt_payload: Dict, on_progress=None, on_stream=None) -> str:
-        if not self.api_key:
+        # Use Claude Opus via Anthropic API for high-quality narrative
+        use_anthropic = bool(self.anthropic_api_key)
+        if not use_anthropic and not self.api_key:
             if on_stream:
-                on_stream("OpenAI API key missing. Draft streaming unavailable.\n")
+                on_stream("API key missing. Draft streaming unavailable.\n")
             return "{}"
-
-        target_model = self.model
 
         system_prompt = (
             "You are a senior sell-side equity research analyst at a top-tier Japanese investment bank "
-            "(Nomura, Daiwa, SMBC Nikko calibre).  You write initiating-coverage research notes.\n\n"
-            "CRITICAL LENGTH REQUIREMENTS — your output will be REJECTED if too short:\n"
-            "- summary_text: MINIMUM 3 full sentences (50+ words). Describe business model, market position, "
-            "key products/services, geographic scope, and competitive advantages.\n"
-            "- company_bullets: EXACTLY 3 bullets, each 1-2 full sentences (20+ words each). "
-            "Each must be substantive with named products, strategies, or market positions.\n"
-            "- outlook_summary: MINIMUM 8 sentences (120+ words). This is the MOST IMPORTANT section. "
-            "It must be a dense analytical paragraph covering: (1) latest revenue & operating income with "
-            "exact yen figures and YoY growth rates, (2) margin trend over time, (3) ROE level and trajectory "
-            "vs prior years, (4) operating cash flow vs net income ratio and earnings quality implications, "
-            "(5) capex levels and investment intensity, (6) dividend changes/policy, (7) management's named "
-            "medium-term strategy and key initiatives, (8) key execution risks or headwinds.\n"
-            "- bull_case: EXACTLY 3 bullets, each 2-3 full sentences (30+ words each) with specific metrics.\n"
-            "- bear_case: EXACTLY 3 bullets, each 2-3 full sentences (30+ words each) with specific metrics.\n\n"
+            "(Nomura, Daiwa, SMBC Nikko calibre). You write initiating-coverage research notes.\n\n"
+            "OUTPUT FORMAT: You MUST return a STRICT JSON object with exactly the sections below. "
+            "No markdown fences, no commentary outside the JSON.\n\n"
+            "SECTION REQUIREMENTS:\n\n"
+            "1. company_profile (string — EXACTLY 100-120 words, concise single paragraph):\n"
+            "   Investor-grade company introduction. Cover:\n"
+            "   - Founding year, revenue scale (¥B/¥T), and core business pillars\n"
+            "   - Operating margins vs peers, employee count, geographic footprint\n"
+            "   - Current strategic plan (by name if known)\n"
+            "   STRICT: Do NOT exceed 120 words. Be dense and specific.\n\n"
+            "2. business_performance (string — EXACTLY 80-100 words, concise single paragraph):\n"
+            "   Weave together with exact numbers:\n"
+            "   - Revenue and operating income with ¥ figures and YoY growth %\n"
+            "   - EPS, ROE trajectory, DPS and payout ratio\n"
+            "   - The single most important financial trend and why it matters\n"
+            "   STRICT: Do NOT exceed 100 words. Dense analytical prose, not a list.\n\n"
+            "3. material_note (string — 1-2 sentences, MAX 40 words):\n"
+            "   The single most important risk or catalyst right now.\n"
+            "   Be specific — name the event, regulation, or structural shift.\n\n"
+            "4. investment_thesis (array of EXACTLY 4 strings):\n"
+            "   Each bullet is ONE sentence (15-20 words), data-backed.\n"
+            "   Key reasons to own or watch the stock.\n\n"
+            "5. bull_case (array of EXACTLY 2 strings):\n"
+            "   Each 1-2 sentences (25-30 words max) with specific upside scenario.\n\n"
+            "6. bear_case (array of EXACTLY 2 strings):\n"
+            "   Each 1-2 sentences (25-30 words max) with specific downside risk.\n\n"
             "WRITING RULES:\n"
-            "1. Be SPECIFIC — name products, brands, geographies, flagship projects, strategy names. "
-            "Never write generic statements like 'the company has strong fundamentals'. Instead write: "
-            "'Toyota's hybrid powertrain dominance (50%+ global HEV share) provides a durable margin advantage "
-            "as electrification transitions unfold unevenly across geographies.'\n"
-            "2. Use REAL NUMBERS from the data — quote revenue in ¥B format, margins as %, ROE, OCF, capex, "
-            "YoY changes, 5-year CAGRs. Compute derived metrics: OCF/net income ratio, capex/sales %, "
-            "debt/equity, payout ratio, revenue CAGR from multi-year data if available.\n"
-            "3. Reference MULTI-YEAR TRENDS when data is provided — do not just cite the latest period. "
-            "Say 'ROE improved from 5.2% to 8.0% over five years' rather than just 'ROE is 8.0%'.\n"
-            "4. For the outlook, write in a flowing analytical style — connect financial metrics to business "
-            "implications. Example: 'Operating cash flow surged 148% to ¥599B, significantly outpacing "
-            "net income and suggesting high-quality earnings, though capex remains elevated at ¥322B "
-            "indicating continued growth investment.'\n"
-            "5. ALL output text MUST be in English. Translate every Japanese word, product name, "
-            "app name, brand name, and proper noun to English or romaji. Never output Japanese "
-            "characters (hiragana, katakana, kanji) in any field. For example: 'FXなび' → 'FX Navi', "
-            "'株たす' → 'Kabu Tasu', 'トウシカ' → 'Toushika'.\n"
-            "6. Use citations [id] when supported by sources.\n"
-            "7. Return STRICT JSON only.  No markdown fences.\n"
-            "8. If information is genuinely unknown, use '—'.  Do NOT invent facts.\n"
-            "9. revenue_mix percentages MUST sum to ~100%. Segment names must be short (2-5 words), "
-            "NOT paragraph descriptions. Include revenue_mm (revenue in millions of yen) when available.\n"
-            "10. If the Facts Summary contains 'EDINET Segment Data' with parsed segment names, revenues, "
-            "and percentages, use those as GROUND TRUTH for revenue_mix. Copy the segment names and "
-            "percentages exactly — do NOT invent different segments or change the numbers. "
-            "You may translate Japanese segment names to short English equivalents.\n"
-            "11. For ownership_mix: ONLY provide values if the data explicitly contains 所有者別状況 "
-            "(ownership by holder type) percentages. Typical ranges: Foreign 10-35%, Institutional "
-            "15-40%, Corporate 10-30%, Individual 15-40%. If no ownership data found, return ALL "
-            "null values. Do NOT guess. Values must sum to ~100%.\n"
+            "- Be SPECIFIC: name products, brands, projects, strategy names. Never generic.\n"
+            "- Use REAL NUMBERS from the data: revenue in ¥B/¥T, margins %, ROE, DPS, EPS, OCF.\n"
+            "- Compute derived metrics: OCF/NI ratio, capex/sales %, payout ratio, revenue CAGR.\n"
+            "- Reference MULTI-YEAR TRENDS: 'ROE improved from 5.2% to 8.0%' not just 'ROE is 8.0%'.\n"
+            "- ALL output MUST be in English. Translate Japanese product names to English/romaji.\n"
+            "- Use citations [id] from provided sources when available.\n"
+            "- If unknown, use '—'. Do NOT invent facts.\n"
+            "- revenue_mix percentages MUST sum to ~100%. Use EDINET Segment Data as ground truth.\n"
+            "- ownership_mix: ONLY populate if explicit ownership data exists. Otherwise all null.\n"
+            "- geographic_mix: populate overseas_pct and domestic_pct if revenue breakdown by geography is known. Otherwise null.\n"
         )
 
         report_date = prompt_payload.get("generated_at") or ""
@@ -262,36 +262,32 @@ These are non-recommendation outputs; do not issue a rating or target price.
         valuation_block = prompt_payload.get("valuation_block", "")
 
         schema = """
-Return JSON with EXACTLY this structure. READ THE LENGTH REQUIREMENTS — every narrative field has a MINIMUM word count:
+Return JSON with EXACTLY this structure:
 {
-  "summary_text": "<COMPANY DESCRIPTION — MINIMUM 50 words, 3 sentences. Describe: (a) what the company does and its core business model, (b) its market position and scale (e.g. 'Japan's largest...', '#2 player in...'), (c) key products/services/brands/assets, (d) geographic scope. Write as if briefing an institutional investor. EXAMPLE: 'Mitsui Fudosan is Japan's largest comprehensive real estate developer, managing a diverse portfolio that includes premium office buildings, retail centers, and residential developments. The company is a market leader in large-scale urban redevelopment projects and maintains a significant global presence across North America, Europe, and Asia.'>",
-
-  "company_bullets": [
-    "<BULLET 1 — MINIMUM 20 words. Specific market position with named flagship products/projects/brands. EXAMPLE: 'Holds a dominant market position in Japan through iconic flagship developments such as Tokyo Midtown, Nihonbashi, and the LaLaport retail chain.'>",
-    "<BULLET 2 — MINIMUM 20 words. Business model strength or diversification with specifics. EXAMPLE: 'Maintains a highly diversified and resilient business mix spanning office leasing, residential sales, logistics, and luxury hospitality.'>",
-    "<BULLET 3 — MINIMUM 20 words. Strategic edge, competitive moat, or operational advantage. EXAMPLE: 'Leverages strong brand equity and an integrated value chain that encompasses development, management, and real estate brokerage services.'>"
+  "company_profile": "<Rich investor-grade paragraph — 100+ words covering founding, revenue scale, business pillars, margins, employees, strategy>",
+  "business_performance": "<Dense analytical paragraph — 120+ words covering revenue/OP YoY, EPS, ROE trend, DPS/payout, buybacks, capex, most important trend>",
+  "material_note": "<2-3 sentences on the single most important risk or catalyst right now>",
+  "investment_thesis": [
+    "<Thesis point 1 — data-backed, 1-2 sentences>",
+    "<Thesis point 2 — data-backed, 1-2 sentences>",
+    "<Thesis point 3 — data-backed, 1-2 sentences>",
+    "<Thesis point 4 — data-backed, 1-2 sentences>"
   ],
-
-  "outlook_summary": "<DENSE ANALYTICAL PARAGRAPH — MINIMUM 120 words, 8+ sentences. This is the most important section. Weave together ALL of these elements in a flowing narrative: (1) latest revenue and operating income with exact ¥B figures and YoY growth %, (2) operating margin level and trend vs prior years, (3) ROE level and multi-year trajectory with basis point changes, (4) operating cash flow amount and ratio to net income — what this implies about earnings quality, (5) capex amount and % of sales — what this implies about investment intensity, (6) dividend per share changes and payout ratio context, (7) management's named medium-term plan/strategy and 2-3 key strategic initiatives, (8) 1-2 specific execution risks. Connect metrics to business implications. EXAMPLE QUALITY: 'Mitsui Fudosan demonstrates strong operational momentum with revenue growing 10.2% YoY to ¥2,625B in FY2025 and operating income expanding 9.7% to ¥373B, while ROE improved 50bps to 8.0%. Operating cash flow surged 148% to ¥599B, significantly outpacing net income and suggesting high-quality earnings, though capex remains elevated at ¥322B indicating continued growth investment. The dividend cut from ¥84 to ¥31 in FY2025 is notable despite steady 40%+ payout ratios, likely reflecting normalization after a one-time special dividend. Management's \"& INNOVATION 2030\" strategy positions the company as an \"industrial developer\" focused on ESG integration, TCFD/RE100 commitments, and value-added real estate beyond traditional landlord models, though execution risk remains on these ambitious transformation goals.'>",
-
   "bull_case": [
-    "<BULL 1 — MINIMUM 30 words, 2-3 sentences. Growth or profitability thesis with multi-year trends and specific numbers. EXAMPLE: 'Consistent top-line growth with 5-year revenue CAGR of 5.5% and improving operating margins (14.2% in FY2025 vs 10.2% in FY2021) demonstrate pricing power and operational leverage in Japan's recovering real estate market'>",
-    "<BULL 2 — MINIMUM 30 words, 2-3 sentences. Cash flow, balance sheet, or capital return thesis with metrics>",
-    "<BULL 3 — MINIMUM 30 words, 2-3 sentences. Strategic positioning, ROE improvement, or management quality thesis>"
+    "<Bull 1 — 2-3 sentences with specific upside numbers>",
+    "<Bull 2 — 2-3 sentences with specific upside numbers>"
   ],
-
   "bear_case": [
-    "<BEAR 1 — MINIMUM 30 words, 2-3 sentences. Valuation risk with specific multiples and comparison. EXAMPLE: 'PER of 20.8x represents stretched valuation relative to 8.0% ROE, implying market has priced in significant multiple expansion with limited margin of safety'>",
-    "<BEAR 2 — MINIMUM 30 words, 2-3 sentences. Operational or financial risk with metrics>",
-    "<BEAR 3 — MINIMUM 30 words, 2-3 sentences. Structural, competitive, or macro risk>"
+    "<Bear 1 — 2-3 sentences with specific downside numbers>",
+    "<Bear 2 — 2-3 sentences with specific downside numbers>"
   ],
-
   "major_shareholders": [{"name":"<English name>", "pct":0, "change":"NEW|↑|↓|—"}],
   "cross_holdings": [{"name":"", "ticker":"", "pct_held":0}],
   "revenue_mix": [{"segment":"short name 2-5 words", "pct":0, "revenue_mm":0}],
   "peers": [{"ticker":"<TSE code>", "name":"<English name>", "mkt_cap_t":0}],
   "corporate_info": {"president":"<English name>", "employees":"<number>", "head_office":"<city, prefecture>"},
   "ownership_mix": {"foreign": null, "institutional": null, "corporate": null, "individual": null},
+  "geographic_mix": {"overseas_pct": null, "domestic_pct": null},
   "disclosures": [{"date":"YYYY-MM-DD", "title":"", "detail":""}],
   "tags": ["REFORM DISCLOSED"]
 }
@@ -318,10 +314,46 @@ Return JSON with EXACTLY this structure. READ THE LENGTH REQUIREMENTS — every 
         )
 
         if on_progress:
-            on_progress(84, "Drafting", "Synthesizing institutional-grade narrative")
+            on_progress(84, "Drafting", "Synthesizing institutional-grade narrative (Claude Opus)")
 
+        if use_anthropic:
+            return self._generate_narrative_anthropic(system_prompt, user_prompt, on_stream)
+        else:
+            return self._generate_narrative_openai(system_prompt, user_prompt, on_stream)
+
+    def _generate_narrative_anthropic(self, system_prompt: str, user_prompt: str, on_stream=None) -> str:
+        client = self._get_anthropic_client()
+        narrative_model = settings.anthropic_narrative_model or "claude-sonnet-4-6"
+        if on_stream:
+            content = ""
+            with client.messages.stream(
+                model=narrative_model,
+                max_tokens=2048,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.25,
+            ) as stream:
+                for text in stream.text_stream:
+                    content += text
+                    on_stream(text)
+            if not content.strip():
+                raise RuntimeError("Claude streaming returned empty response for dashboard narrative")
+            return content
+        else:
+            response = client.messages.create(
+                model=narrative_model,
+                max_tokens=2048,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.25,
+            )
+            if not response.content:
+                return ""
+            return response.content[0].text or ""
+
+    def _generate_narrative_openai(self, system_prompt: str, user_prompt: str, on_stream=None) -> str:
         response = self._client.chat.completions.create(
-            model=target_model,
+            model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -329,7 +361,6 @@ Return JSON with EXACTLY this structure. READ THE LENGTH REQUIREMENTS — every 
             temperature=0.25,
             stream=on_stream is not None,
         )
-
         if on_stream:
             content = ""
             for event in response:
@@ -347,6 +378,90 @@ Return JSON with EXACTLY this structure. READ THE LENGTH REQUIREMENTS — every 
             if not response.choices:
                 return ""
             return response.choices[0].message.content or ""
+
+    def extract_edinet_all(self, company_name: str, stock_code: str, edinet_text: str) -> str:
+        """Single LLM call to extract insights, summary, capital projects, and ESG.
+
+        Replaces 4 separate calls that each sent the full edinet_text (~20KB),
+        eliminating 3 redundant copies of the filing through the API.
+        """
+        if not self.api_key:
+            return "{}"
+        system_prompt = (
+            "You are a Japanese financial analyst. Extract ALL of the following from the EDINET filing. "
+            "All output MUST be in English. Translate any Japanese text. "
+            "Return STRICT JSON only, no code fences. "
+            "If a field is unknown, use an em dash '—' for strings or empty arrays []. Do not invent facts.\n\n"
+            "IMPORTANT for business_segments:\n"
+            "- Look for the セグメント情報 (segment information) section in the filing.\n"
+            "- Look for tables showing 報告セグメント (reporting segments) with columns like:\n"
+            "  外部顧客への売上高 (sales to external customers), セグメント利益 (segment profit).\n"
+            "- Also check 事業の内容 (description of business) for segment names and descriptions.\n"
+            "- Each segment name MUST be short (2-5 words), NOT a paragraph description.\n"
+            "- Include revenue in millions of yen (revenue_mm) when available in the filing.\n"
+            "- Percentages must sum to approximately 100%.\n"
+            "- If exact percentages are not stated, compute them from revenue amounts.\n"
+            "- Include profit_mm (segment profit in millions of yen) when available.\n"
+            "- Do NOT confuse total consolidated figures with segment figures.\n\n"
+            "For capital_projects:\n"
+            "- Look for 設備投資, 事業計画, 開発計画, 資本的支出, 投資計画, "
+            "主要な設備の新設, 重要な設備の新設・拡充.\n"
+            "- Only include projects with concrete details (name, amount, or timeline).\n"
+            "- Maximum 10 projects.\n\n"
+            "For ESG:\n"
+            "- Look for サステナビリティ, ESG, 環境, TCFD, 人的資本, "
+            "ガバナンス, CO2, 気候変動, 多様性, ダイバーシティ, 人権, コンプライアンス.\n"
+            "- Only include items with concrete details from the filing.\n\n"
+            "For summary:\n"
+            "- Summarize the filing into 2-3 English sentences.\n"
+            "- Focus on business activities, recent changes, and governance signals.\n"
+        )
+        schema = """
+Return a SINGLE JSON object with ALL of these top-level keys:
+
+{
+  "insights": {
+    "business_segments": [
+      {"name": "short name 2-5 words", "pct": 65.2, "revenue_mm": 12345, "profit_mm": 1234}
+    ],
+    "risk_factors": ["risk factor 1", "risk factor 2"],
+    "governance": {
+      "board": "board composition summary",
+      "auditors": "auditor info",
+      "ownership": "ownership structure notes"
+    }
+  },
+  "summary": "2-3 English sentences summarizing the filing.",
+  "capital_projects": [
+    {
+      "project_name": "Name of project",
+      "type": "Office|Logistics|R&D|Factory|IT|Residential|Other",
+      "timeline": "e.g. FY2025-FY2027 or Ongoing",
+      "amount_mm": 1500,
+      "description": "One sentence summary"
+    }
+  ],
+  "esg": {
+    "environmental": ["Concrete environmental initiative (1 sentence each)"],
+    "social": ["Concrete social/HR initiative (1 sentence each)"],
+    "governance": ["Concrete governance policy (1 sentence each)"],
+    "certifications": ["ISO 14001", "TCFD supporter"]
+  }
+}
+
+Rules:
+- business_segments: percentages must sum to ~100%, compute from revenue if not stated
+- capital_projects: max 10, amount_mm null if not disclosed, return [] if none found
+- esg: max 5 items per category, use empty arrays if no info, certifications are short labels
+- summary: 2-3 sentences, plain English
+"""
+        user_prompt = (
+            f"Company: {company_name} ({stock_code})\n\n"
+            "EDINET text:\n"
+            f"{edinet_text}\n\n"
+            f"{schema}"
+        )
+        return self._create_completion(system_prompt, user_prompt)
 
     def translate_json_to_english(self, json_text: str) -> str:
         if not self.api_key:

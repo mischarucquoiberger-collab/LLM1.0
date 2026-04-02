@@ -164,9 +164,9 @@ export async function fetchQuote(stockCode) {
   }
 }
 
-export async function fetchPriceHistory(stockCode, days = 90) {
+export async function fetchPriceHistory(stockCode, days = 90, interval = "1d") {
   try {
-    const res = await fetch(`/api/price-history/${encodeURIComponent(stockCode)}?days=${days}`);
+    const res = await fetch(`/api/price-history/${encodeURIComponent(stockCode)}?days=${days}&interval=${interval}`);
     if (!res.ok) return null;
     return res.json();
   } catch {

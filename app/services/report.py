@@ -66,13 +66,37 @@ def _classify_sector_stub(stock_code: str, fallback: str = "General") -> str:
 
 KNOWN_CODE_NAME_JP = {
     "2983": "株式会社アールプランナー",
+    "6501": "株式会社日立製作所",
+    "9984": "ソフトバンクグループ株式会社",
+    "3697": "株式会社SHIFT",
+    "7203": "トヨタ自動車株式会社",
+    "6758": "ソニーグループ株式会社",
+    "6861": "株式会社キーエンス",
+    "9432": "日本電信電話株式会社",
+    "8306": "株式会社三菱UFJフィナンシャル・グループ",
 }
 KNOWN_CODE_NAME_EN = {
     "2983": "Arr Planner Co., Ltd.",
+    "6501": "Hitachi, Ltd.",
+    "9984": "SoftBank Group Corp.",
+    "3697": "SHIFT Inc.",
+    "7203": "Toyota Motor Corporation",
+    "6758": "Sony Group Corporation",
+    "6861": "Keyence Corporation",
+    "9432": "Nippon Telegraph and Telephone Corporation",
+    "8306": "Mitsubishi UFJ Financial Group, Inc.",
 }
 KNOWN_CODE_SECTOR_MAP = {
     "2983": "Homebuilding / Residential Real Estate",
     "6501": "Industrial Conglomerates / Electronics",
+}
+# Known head office overrides for companies where LLM enrichment may confuse
+# parent HQ (in Japan) with foreign subsidiary HQ.
+KNOWN_CODE_HEAD_OFFICE = {
+    "9984": "Tokyo, Japan (Minato-ku)",
+    "6501": "Tokyo, Japan (Chiyoda-ku)",
+    "7203": "Toyota City, Aichi, Japan",
+    "6758": "Tokyo, Japan (Minato-ku)",
 }
 
 
@@ -354,6 +378,21 @@ def _compute_clean_kpi(financials_raw: Dict, prices_raw: Dict) -> Dict[str, Any]
     ebit_pct = round(op_profit / revenue * 100, 1) if (op_profit is not None and revenue and revenue > 0) else None
     ocf_pct = round(ocf / revenue * 100, 0) if (ocf is not None and revenue and revenue > 0) else None
 
+    # EV/EBITDA: Enterprise Value / EBITDA (using OP as EBITDA proxy)
+    # Annualise interim OP for EV/EBITDA
+    ev_ebitda = None
+    if op_profit and op_profit > 0 and market_cap:
+        ann_op = op_profit
+        if period_type != "FY":
+            ann_factor = {"1Q": 4, "2Q": 2, "3Q": 4/3}.get(period_type, 1)
+            ann_op = op_profit * ann_factor
+        borrowings = _to_float_safe(latest.get("Borrowings")) or _to_float_safe(latest.get("TotalDebt")) or 0
+        cash_equiv = _to_float_safe(latest.get("CashAndEquivalents")) or _to_float_safe(latest.get("CashAndDeposits")) or 0
+        net_debt = borrowings - cash_equiv
+        ev = market_cap + net_debt
+        if ann_op > 0:
+            ev_ebitda = ev / ann_op
+
     kpi = {
         "price": current_price,
         "market_cap_raw": market_cap,
@@ -363,9 +402,12 @@ def _compute_clean_kpi(financials_raw: Dict, prices_raw: Dict) -> Dict[str, Any]
         "roe": roe,
         "div_yield": div_yield,
         "bps": bps,
+        "eps": eps,
+        "dps": div_annual,
         "equity_ratio": equity_ratio,
         "ebit_pct": ebit_pct,
         "ocf_pct": ocf_pct,
+        "ev_ebitda": ev_ebitda,
         "market_cap_display": None,
         "split_multiplier": split_multiplier,
     }
@@ -584,11 +626,26 @@ def _classify_shareholders_to_ownership(shareholders: List[Dict[str, Any]]) -> D
         return {}
 
     # Domestic institutional: Japanese trust banks, insurance, custodians, asset managers
+    # Includes English names of major Japanese custodian banks (often appear in
+    # J-Quants shareholder lists as English names)
     _DOMESTIC_INST_KW = [
         "信託銀行", "信託", "生命保険", "損害保険", "火災保険",
         "アセットマネジメント", "投資顧問", "投信", "運用",
         "ファンド", "キャピタル", "年金",
         "カストディ", "マスタートラスト",
+        # English names of key Japanese domestic custodian banks
+        "master trust bank of japan", "custody bank of japan",
+        "japan trustee", "trust & custody",
+        "japan securities finance",
+        # English names of major Japanese insurers
+        "nippon life", "dai-ichi life", "meiji yasuda",
+        "sumitomo life", "tokio marine", "mitsui sumitomo",
+        "sompo", "aioi nissay",
+        # English names of Japanese banks/brokers (specific enough to avoid false matches)
+        "mufg", "mizuho", "smbc", "resona",
+        "nomura securities", "nomura asset", "nomura trust",
+        "daiwa securities", "daiwa asset",
+        "nikko asset", "nikko securities",
     ]
     # Foreign entities: katakana names of foreign institutions + ASCII equivalents
     _FOREIGN_ENTITY_KW = [
@@ -605,7 +662,6 @@ def _classify_shareholders_to_ownership(shareholders: List[Dict[str, Any]]) -> D
         "goldman sachs", "morgan stanley", "ubs", "barclays", "hsbc",
         "aberdeen", "invesco", "schroders", "lazard", "wellington",
         "dimensional", "norges", "calpers", "gic", "temasek",
-        "master trust", "custody", "custodian",
         "moxley", "bny", "citibank", "credit suisse",
     ]
     _FOREIGN_KW = ["外国", "foreign"]
@@ -1973,11 +2029,26 @@ def _build_capital_structure_data(
     cfi = _fl(latest.get("cfi"))
     cff = _fl(latest.get("cff"))
     fcf = _fl(latest.get("fcf"))
+    # Interim reports often lack CF data — fall back to most recent FY row
+    if cfo is None and rows_sorted:
+        for _cf_row in reversed(rows_sorted):
+            if _fl(_cf_row.get("cfo")) is not None:
+                cfo = _fl(_cf_row.get("cfo"))
+                cfi = _fl(_cf_row.get("cfi"))
+                cff = _fl(_cf_row.get("cff"))
+                fcf = _fl(_cf_row.get("fcf"))
+                break
     net_income = _fl(latest.get("net_income"))
     revenue = _fl(latest.get("revenue"))
     op = _fl(latest.get("operating_profit"))
     eps = _fl(latest.get("eps"))
     dps = _fl(latest.get("dps"))
+    # Interim reports often lack DPS — fall back to most recent FY row
+    if dps is None and rows_sorted:
+        for _dps_row in reversed(rows_sorted):
+            if _fl(_dps_row.get("dps")) is not None:
+                dps = _fl(_dps_row.get("dps"))
+                break
     bps_raw = _fl(latest.get("bps_raw"))
     treasury_shares = _fl(latest.get("treasury_shares"))
     shares_out = _fl(latest.get("shares_out"))
@@ -2126,17 +2197,26 @@ def _build_capital_structure_data(
     return {
         "asset_composition": {
             "total_assets": total_assets,
+            "total_assets_d": _format_compact(total_assets),
             "cash_equiv": cash_equiv,
+            "cash_equiv_d": _format_compact(cash_equiv),
             "non_cash_assets": non_cash_assets,
+            "non_cash_assets_d": _format_compact(non_cash_assets),
             "equity": equity,
+            "equity_d": _format_compact(equity),
             "equity_ratio_pct": equity_ratio_pct,
             "treasury_shares": treasury_shares,
             "treasury_value": treasury_value,
+            "treasury_value_d": _format_compact(treasury_value),
         },
         "capital_structure": {
             "equity": equity,
+            "equity_d": _format_compact(equity),
             "borrowings": borrowings,
+            "borrowings_d": _format_compact(borrowings),
             "net_debt": net_debt,
+            "net_debt_d": _format_compact(net_debt),
+            "net_debt_abs_d": _format_compact(abs(net_debt)) if net_debt is not None else "—",
             "de_ratio": de_ratio,
             "equity_ratio_pct": equity_ratio_pct,
             "net_debt_ebitda": net_debt_ebitda,
@@ -2146,9 +2226,13 @@ def _build_capital_structure_data(
         },
         "cash_flow_quality": {
             "cfo": cfo,
+            "cfo_d": _format_compact(cfo),
             "cfi": cfi,
+            "cfi_d": _format_compact(cfi),
             "cff": cff,
+            "cff_d": _format_compact(cff),
             "fcf": fcf,
+            "fcf_d": _format_compact(fcf),
             "fcf_margin_pct": fcf_margin_pct,
             "fcf_yield_pct": fcf_yield_pct,
             "cash_conversion": cash_conversion,
@@ -3283,7 +3367,7 @@ def _fetch_peer_benchmarking(
 
             # Get market data for P/B, P/E, market cap
             try:
-                _time.sleep(0.3)  # brief pause between financials and prices
+                _time.sleep(1.0)  # pause between financials and prices to avoid 429
                 prices_data = jquants.get_prices(code)
                 quotes = prices_data.get("daily_quotes") or prices_data.get("data") or []
                 if quotes:
@@ -3343,16 +3427,18 @@ def _fetch_peer_benchmarking(
 
     # Fetch peer metrics sequentially with delay between peers.
     # J-Quants enforces rate limits (429) after heavy pipeline usage.
+    # Use longer delays (2.5s) to stay well under rate limits after
+    # the main pipeline already consumed significant API budget.
     peer_results = []
-    for i, peer in enumerate(raw_peers[:10]):
+    for i, peer in enumerate(raw_peers[:6]):
         if i > 0:
-            _time.sleep(1.0)  # stagger requests to stay under rate limit
+            _time.sleep(3.0)  # stagger requests to stay under rate limit
         try:
             peer_results.append(_get_peer_metrics(peer))
         except Exception as exc:
             print(f"[PEER DEBUG] Peer {peer.get('code')} completely failed: {exc}")
 
-    print(f"[PEER DEBUG] peer_results={len(peer_results)}, raw_peers={len(raw_peers[:10])}")
+    print(f"[PEER DEBUG] peer_results={len(peer_results)}, raw_peers={len(raw_peers[:6])}")
     for pr in peer_results:
         print(f"[PEER DEBUG]   {pr['ticker']} {pr['name'][:20]}: ebit={pr.get('ebit_pct')}, roe={pr.get('roe_pct')}, pb={pr.get('pb')}, pe={pr.get('pe')}")
     valid_peers = [p for p in peer_results if p.get("ebit_pct") is not None or p.get("roe_pct") is not None]
@@ -3379,6 +3465,27 @@ def _fetch_peer_benchmarking(
     }
 
 
+_WEB_CACHE_TTL = 24 * 3600  # 24 hours
+
+
+def _cached_web_fetch(label: str, stock_code: str, fn):
+    """Wrap a web scraper with 24h file-based caching."""
+    cache_path = Path(settings.output_dir) / "cache" / f"{label}_{stock_code}.json"
+    cached = load_cache(cache_path, _WEB_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        result = fn(stock_code)
+    except Exception:
+        return None
+    if result is not None:
+        try:
+            save_cache(cache_path, result)
+        except Exception:
+            pass
+    return result
+
+
 def build_report_payload(
     stock_code: str,
     company_name: str | None = None,
@@ -3386,6 +3493,15 @@ def build_report_payload(
     on_progress=None,
     on_event=None,
 ) -> Dict:
+    """Build the full report data payload using dependency-driven parallelism.
+
+    Instead of sequential phases (A→B→C→D→E), tasks are submitted to a
+    thread-pool as soon as their specific dependencies resolve.  Two LLM
+    calls (EDINET extraction + profile enrichment) now run **in parallel**
+    instead of back-to-back, and all web scrapers fire at t=0 with 24h
+    file-based caching.
+    """
+    from concurrent.futures import ThreadPoolExecutor
     import threading as _threading
 
     last_pct = 0
@@ -3414,311 +3530,536 @@ def build_report_payload(
     edinet = EdinetClient()
     jquants = JQuantsClient()
 
-    # ── Phase A: fetch company_info, listed_info, and SERP concurrently ──
-    progress(10, "Company Info", "Fetching company info, listed info & SERP")
-
-    def _fetch_company_info():
-        try:
-            return jquants.get_company_info(stock_code)
-        except Exception:
-            return None
-
-    def _fetch_listed_info():
-        try:
-            return jquants.get_listed_info(stock_code)
-        except Exception:
-            return None
-
-    # We need company name for SERP; use a preliminary name from known maps or input
-    preliminary_name = company_name or KNOWN_CODE_NAME_JP.get(stock_code) or stock_code
-
-    def _fetch_serp():
-        try:
-            return serp.search_company_context(preliminary_name, stock_code, mode=mode)
-        except Exception:
-            return []
-
-    phase_a = run_concurrent_dict({
-        "company_info": _fetch_company_info,
-        "listed_info": _fetch_listed_info,
-        "serp_results": _fetch_serp,
-    }, max_workers=3)
-
-    company_info = phase_a.get("company_info")
-    listed_info = phase_a.get("listed_info")
-    serp_results = phase_a.get("serp_results") or []
-
-    # ── ETF / REIT / Fund detection (flag, not error) ──
-    _market_code = ((listed_info or {}).get("MarketCodeName") or (listed_info or {}).get("MktNm") or "").lower()
-    _co_name = ((listed_info or {}).get("CompanyName") or (listed_info or {}).get("CoName") or (listed_info or {}).get("CoNameEn") or "")
-    _co_name_lower = _co_name.lower()
-    # Check both half-width and full-width characters (ＥＴＦ, ＲＥＩＴ)
-    _is_etf = any(kw in _market_code for kw in ("etf", "etn")) or "etf" in _co_name_lower or "ＥＴＦ" in _co_name or "etn" in _co_name_lower
-    _is_reit = "reit" in _market_code or "reit" in _co_name_lower or "ＲＥＩＴ" in _co_name or "投資法人" in _co_name
-    _is_fund = _is_etf or _is_reit
-    _fund_type = "ETF" if _is_etf else ("REIT" if _is_reit else None)
-    # Don't raise — continue report generation with flag
-
-    resolved_company_name = _coerce_company_name(company_name, company_info.name if company_info else None)
-    if resolved_company_name == "Unknown Company":
-        resolved_company_name = KNOWN_CODE_NAME_JP.get(stock_code, resolved_company_name)
-
-    # If still unknown, try SERP hint
-    if resolved_company_name == "Unknown Company":
-        serp_name_hint = _serp_company_name_hint(serp_results)
-        if serp_name_hint:
-            resolved_company_name = serp_name_hint
-
-    # ── Phase B: EDINET scan, J-Quants financials/prices, and research pages — concurrent ──
-    progress(20, "Data Fetch", "Fetching EDINET, financials, prices & research pages")
-
     days_back = 365 if mode == "fast" else settings.edinet_lookback_days
     edinet_error = None
     use_prices = (not settings.edinet_only) or settings.jquants_prices_only
+    preliminary_name = company_name or KNOWN_CODE_NAME_JP.get(stock_code) or stock_code
 
-    def _fetch_edinet_docs():
-        def on_match(doc):
-            event(
-                "edinet",
-                f"Found EDINET filing {doc.doc_id}",
-                {
-                    "doc_id": doc.doc_id,
-                    "submit_date": doc.submit_date,
-                    "doc_type": doc.doc_type_code or doc.doc_type,
-                    "filer": doc.filer_name,
-                },
-            )
-        try:
-            return edinet.latest_filings_for_code(
-                stock_code,
-                days_back=days_back,
-                company_name=resolved_company_name,
-                doc_type=settings.edinet_doc_type,
-                max_docs=20,
-                on_match=on_match,
-            )
-        except Exception as exc:
-            return {"error": str(exc)}
+    # Pre-check EDINET financials cache (skip slow XBRL parsing if cached)
+    _ed_fin_cache_key = f"edinet_fin_{stock_code}_{days_back}.json"
+    _ed_fin_cache_path = Path(settings.output_dir) / "cache" / _ed_fin_cache_key
+    _cached_edinet_financials = load_cache(_ed_fin_cache_path, max_age_seconds=7 * 24 * 3600)
 
-    def _fetch_jquants_financials():
+    # ══════════════════════════════════════════════════════════════════════
+    #  Dependency-driven parallel pipeline (ThreadPoolExecutor)
+    #
+    #  Wave 0 (t=0):  company_info, listed_info, serp, financials, prices,
+    #                  5 web scrapers (cached), activist_radar        [11]
+    #  Gate 1 (→company_info): edinet_docs
+    #  Gate 2 (→serp):         research_pages
+    #  Gate 3 (→edinet_docs):  edinet_financials, narratives, segments
+    #  Gate 4 (→narratives+research): LLM extract_edinet_all ‖ LLM profile
+    #  Gate 5 (→edinet_fin):   valuation, peers (background thread)
+    # ══════════════════════════════════════════════════════════════════════
+    progress(10, "Data Fetch", "Launching parallel data collection")
+
+    with ThreadPoolExecutor(max_workers=14) as pool:
+
+        # ── Wave 0: fire all zero-dependency tasks immediately ────────────
+
+        fut_company = pool.submit(lambda: jquants.get_company_info(stock_code))
+        fut_listed = pool.submit(lambda: jquants.get_listed_info(stock_code))
+        fut_serp = pool.submit(
+            lambda: serp.search_company_context(preliminary_name, stock_code, mode=mode)
+        )
+
         if use_prices and (jquants.api_key or jquants.refresh_token):
-            try:
-                return jquants.get_financials(stock_code)
-            except Exception:
-                return {}
-        return {}
+            fut_financials = pool.submit(lambda: jquants.get_financials(stock_code))
+            fut_prices = pool.submit(lambda: jquants.get_prices(stock_code))
+        else:
+            fut_financials = None
+            fut_prices = None
 
-    def _fetch_jquants_prices():
-        if use_prices and (jquants.api_key or jquants.refresh_token):
-            try:
-                return jquants.get_prices(stock_code)
-            except Exception:
-                return {}
-        return {}
+        # Web scrapers — no dependencies, 24h file cache
+        fut_kab_own = pool.submit(
+            lambda: _cached_web_fetch("kabutan_own", stock_code, _fetch_ownership_web)
+        )
+        fut_kab_sh = pool.submit(
+            lambda: _cached_web_fetch("kabutan_sh", stock_code, _fetch_shareholders_kabutan)
+        )
+        fut_kab_corp = pool.submit(
+            lambda: _cached_web_fetch("kabutan_corp", stock_code, _fetch_corporate_info_kabutan)
+        )
+        fut_yahoo_corp = pool.submit(
+            lambda: _cached_web_fetch("yahoo_corp", stock_code, _fetch_corporate_info_yahoo_jp)
+        )
+        fut_web_sec = pool.submit(
+            lambda: _cached_web_fetch("web_sectors", stock_code, _scrape_sector_from_web)
+        )
+        fut_activist = pool.submit(lambda: _fetch_activist_radar_data(stock_code, []))
 
-    def _fetch_research():
-        return _collect_research_pages(serp_results, limit=10 if mode == "full" else 4)
+        # ── Gate 1: company_info + listed_info → resolve name → edinet ──
 
-    phase_b = run_concurrent_dict({
-        "edinet_docs": _fetch_edinet_docs,
-        "jquants_financials": _fetch_jquants_financials,
-        "prices": _fetch_jquants_prices,
-        "research_pages": _fetch_research,
-    }, max_workers=4)
-
-    edinet_docs_result = phase_b.get("edinet_docs")
-    if isinstance(edinet_docs_result, dict) and "error" in edinet_docs_result:
-        edinet_docs = []
-        edinet_error = edinet_docs_result["error"]
-    else:
-        edinet_docs = edinet_docs_result or []
-
-    jquants_financials = phase_b.get("jquants_financials") or {}
-    prices = phase_b.get("prices") or {}
-    research_pages = phase_b.get("research_pages") or []
-
-    if edinet_docs:
-        progress(35, "Data Fetch", f"Found {len(edinet_docs)} EDINET filings")
-    else:
-        progress(35, "Data Fetch", "No EDINET filings found")
-
-    if resolved_company_name == "Unknown Company" and edinet_docs:
-        resolved_company_name = edinet_docs[0].filer_name or resolved_company_name
-
-    profile_data, profile_sources = _extract_company_profile(research_pages)
-
-    # ── Phase C: EDINET financials + narratives — concurrent ──
-    financials_source = "jquants"
-    cache_key = f"edinet_fin_{stock_code}_{days_back}.json"
-    cache_path = Path(settings.output_dir) / "cache" / cache_key
-    edinet_financials = load_cache(cache_path, max_age_seconds=7 * 24 * 3600)
-    if edinet_financials:
-        progress(40, "Extraction", "Loaded EDINET financials from cache")
-
-    def _fetch_edinet_financials():
-        if edinet_financials:
-            return edinet_financials
         try:
-            def on_scan(doc, idx, total):
+            company_info = fut_company.result()
+        except Exception:
+            company_info = None
+        try:
+            listed_info = fut_listed.result()
+        except Exception:
+            listed_info = None
+
+        # ETF / REIT / Fund detection (flag, not error)
+        _market_code = ((listed_info or {}).get("MarketCodeName") or (listed_info or {}).get("MktNm") or "").lower()
+        _co_name = ((listed_info or {}).get("CompanyName") or (listed_info or {}).get("CoName") or (listed_info or {}).get("CoNameEn") or "")
+        _co_name_lower = _co_name.lower()
+        _is_etf = any(kw in _market_code for kw in ("etf", "etn")) or "etf" in _co_name_lower or "\uff25\uff34\uff26" in _co_name or "etn" in _co_name_lower
+        _is_reit = "reit" in _market_code or "reit" in _co_name_lower or "\uff32\uff25\uff29\uff34" in _co_name or "\u6295\u8cc7\u6cd5\u4eba" in _co_name
+        _is_fund = _is_etf or _is_reit
+        _fund_type = "ETF" if _is_etf else ("REIT" if _is_reit else None)
+
+        resolved_company_name = _coerce_company_name(company_name, company_info.name if company_info else None)
+        if resolved_company_name == "Unknown Company":
+            resolved_company_name = KNOWN_CODE_NAME_JP.get(stock_code, resolved_company_name)
+
+        progress(15, "Data Fetch", "Fetching EDINET filings")
+
+        def _do_fetch_edinet_docs():
+            def on_match(doc):
                 event(
-                    "edinet_scan",
-                    f"Scanning {doc.doc_id}",
+                    "edinet",
+                    f"Found EDINET filing {doc.doc_id}",
                     {
                         "doc_id": doc.doc_id,
                         "submit_date": doc.submit_date,
-                        "index": idx,
-                        "total": total,
+                        "doc_type": doc.doc_type_code or doc.doc_type,
+                        "filer": doc.filer_name,
                     },
                 )
-                if total:
-                    pct = 40 + int(10 * (idx / total))
-                    progress(pct, "Extraction", f"Scanning EDINET XBRL {idx}/{total}")
-
-            result = edinet.latest_financials_for_code(
-                stock_code,
-                days_back=days_back,
-                company_name=resolved_company_name,
-                docs=edinet_docs,
-                on_scan=on_scan,
-            )
-            if result:
-                save_cache(cache_path, result)
-            return result
-        except Exception as exc:
-            return {"_error": str(exc)}
-
-    def _fetch_edinet_narratives():
-        """Fetch narratives for up to 5 docs concurrently (Change 10)."""
-        if not edinet_docs:
-            return []
-        docs_to_fetch = edinet_docs[:5]
-        tasks = [lambda doc=doc: edinet.extract_narrative_for_doc(doc.doc_id) for doc in docs_to_fetch]
-        texts = run_concurrent(tasks, max_workers=min(5, len(tasks)))
-        narratives = []
-        for doc, text in zip(docs_to_fetch, texts):
-            if text:
-                narratives.append(f"[{doc.doc_id}]\\n{text}")
-                event("edinet", f"Narrative extracted from {doc.doc_id}", {"doc_id": doc.doc_id})
-        return narratives
-
-    def _fetch_edinet_segments():
-        """Extract segment data directly from EDINET HTML tables / XBRL."""
-        if not edinet_docs:
-            return []
-        # Try the most recent filing first (annual reports have best segment data)
-        for doc in edinet_docs[:3]:
             try:
-                segs = edinet.extract_segments_for_doc(doc.doc_id)
-                if segs and len(segs) >= 2:
-                    event("edinet", f"Segments extracted from {doc.doc_id}", {"count": len(segs)})
-                    return segs
-            except Exception:
-                continue
-        return []
+                return edinet.latest_filings_for_code(
+                    stock_code,
+                    days_back=days_back,
+                    company_name=resolved_company_name,
+                    doc_type=settings.edinet_doc_type,
+                    max_docs=20,
+                    on_match=on_match,
+                )
+            except Exception as exc:
+                return {"error": str(exc)}
 
-    progress(40, "Extraction", "Extracting financials & narratives")
-    phase_c = run_concurrent_dict({
-        "edinet_financials": _fetch_edinet_financials,
-        "narratives": _fetch_edinet_narratives,
-        "edinet_segments": _fetch_edinet_segments,
-        "kabutan_ownership": lambda: _fetch_ownership_web(stock_code),
-        "kabutan_shareholders": lambda: _fetch_shareholders_kabutan(stock_code),
-        "activist_radar": lambda: _fetch_activist_radar_data(stock_code, []),
-        "kabutan_corporate": lambda: _fetch_corporate_info_kabutan(stock_code),
-        "yahoo_corporate": lambda: _fetch_corporate_info_yahoo_jp(stock_code),
-        "web_sectors": lambda: _scrape_sector_from_web(stock_code),
-    }, max_workers=8)
+        fut_edinet_docs = pool.submit(_do_fetch_edinet_docs)
 
-    edinet_fin_result = phase_c.get("edinet_financials")
-    if isinstance(edinet_fin_result, dict) and "_error" in edinet_fin_result:
-        if not edinet_financials:
-            edinet_financials = {}
-        if not edinet_error:
-            edinet_error = edinet_fin_result["_error"]
-    elif edinet_fin_result:
-        edinet_financials = edinet_fin_result
+        # ── Gate 2: serp → research_pages ─────────────────────────────
 
-    edinet_segments = phase_c.get("edinet_segments") or []
-    kabutan_shareholders = phase_c.get("kabutan_shareholders") or []
-
-    narrative_parts = phase_c.get("narratives") or []
-    edinet_narrative = "\\n\\n".join(narrative_parts) if narrative_parts else ""
-    edinet_profile = _extract_profile_from_edinet(edinet_narrative)
-
-    # ── Activist radar: set poison pill flag now that narrative is available ──
-    activist_radar = phase_c.get("activist_radar") or {"filings": [], "has_poison_pill": False}
-    if isinstance(activist_radar, dict):
-        activist_radar["has_poison_pill"] = _check_poison_pill(edinet_narrative)
-
-    # ── Phase D: LLM calls (insights + summary + capital projects + ESG) — concurrent ──
-    edinet_insights: Dict[str, Any] = {}
-    edinet_summary = ""
-    capital_projects: List[Dict[str, Any]] = []
-    esg_data: Dict[str, Any] = {}
-    if edinet_narrative:
         try:
-            llm = LlmClient()
-            progress(55, "Analysis", "Running LLM analysis")
-
-            llm_results = run_concurrent_dict({
-                "insights": lambda: llm.extract_edinet_insights(resolved_company_name, stock_code, edinet_narrative),
-                "summary": lambda: llm.summarize_edinet(edinet_narrative),
-                "capital_projects": lambda: llm.extract_capital_projects(resolved_company_name, stock_code, edinet_narrative),
-                "esg_data": lambda: llm.extract_esg_data(resolved_company_name, stock_code, edinet_narrative),
-            }, max_workers=4)
-
-            insights_raw = llm_results.get("insights")
-            edinet_insights = _safe_parse_json(insights_raw) if insights_raw else {}
-            edinet_summary = llm_results.get("summary") or ""
-
-            capital_projects_raw = llm_results.get("capital_projects")
-            if capital_projects_raw:
-                parsed = _safe_parse_json(capital_projects_raw)
-                if isinstance(parsed, list):
-                    capital_projects = parsed
-                elif isinstance(parsed, dict):
-                    capital_projects = parsed.get("projects") or parsed.get("pipeline") or []
-
-            esg_data = _safe_parse_json(llm_results.get("esg_data") or "") or {}
+            serp_results = fut_serp.result() or []
         except Exception:
-            edinet_insights = {}
-            edinet_summary = ""
-            capital_projects = []
-            esg_data = {}
+            serp_results = []
 
-    if edinet_financials:
-        financials = edinet_financials
-        financials_source = "edinet"
         if resolved_company_name == "Unknown Company":
-            resolved_company_name = edinet_financials.get("filer_name") or resolved_company_name
-    else:
-        financials = jquants_financials
-        financials_source = "jquants" if jquants_financials else "edinet"
+            serp_name_hint = _serp_company_name_hint(serp_results)
+            if serp_name_hint:
+                resolved_company_name = serp_name_hint
 
-    if company_name and resolved_company_name == "Unknown Company":
-        resolved_company_name = company_name
+        fut_research = pool.submit(
+            lambda: _collect_research_pages(serp_results, limit=10 if mode == "full" else 4)
+        )
 
-    prices_error = None
-    if not prices and use_prices:
-        if jquants.api_key or jquants.refresh_token:
-            prices_error = "J-Quants returned empty prices"
+        # ── Gate 3: edinet_docs → financials, narratives, segments ────
+
+        edinet_docs_result = fut_edinet_docs.result()
+        if isinstance(edinet_docs_result, dict) and "error" in edinet_docs_result:
+            edinet_docs = []
+            edinet_error = edinet_docs_result["error"]
         else:
-            prices_error = "J-Quants API key missing or invalid"
-    progress(62, "Analysis", "Data compilation complete")
+            edinet_docs = edinet_docs_result or []
 
-    # Fallback to public CSV if J-Quants returned nothing
-    try:
-        if use_prices and (not prices or not _compute_price_kpis(prices).get("row_count")):
-            progress(63, "Analysis", "Fallback price fetch (Stooq CSV)")
-            csv_prices = jquants.get_prices_fallback_csv(stock_code, from_date=None)
-            if csv_prices and _compute_price_kpis(csv_prices).get("row_count"):
-                prices = csv_prices
-                prices_error = None
-                progress(64, "Analysis", "Fallback market data ready")
-    except Exception as exc:
-        if not prices_error:
-            prices_error = f"Fallback price error: {exc}"
+        if edinet_docs:
+            progress(25, "Data Fetch", f"Found {len(edinet_docs)} EDINET filings")
+        else:
+            progress(25, "Data Fetch", "No EDINET filings found")
 
+        if resolved_company_name == "Unknown Company" and edinet_docs:
+            resolved_company_name = edinet_docs[0].filer_name or resolved_company_name
+
+        def _do_edinet_financials():
+            if _cached_edinet_financials:
+                return _cached_edinet_financials
+            try:
+                def on_scan(doc, idx, total):
+                    event(
+                        "edinet_scan",
+                        f"Scanning {doc.doc_id}",
+                        {
+                            "doc_id": doc.doc_id,
+                            "submit_date": doc.submit_date,
+                            "index": idx,
+                            "total": total,
+                        },
+                    )
+                    if total:
+                        pct = 30 + int(10 * (idx / total))
+                        progress(pct, "Extraction", f"Scanning EDINET XBRL {idx}/{total}")
+
+                result = edinet.latest_financials_for_code(
+                    stock_code,
+                    days_back=days_back,
+                    company_name=resolved_company_name,
+                    docs=edinet_docs,
+                    on_scan=on_scan,
+                )
+                if result:
+                    save_cache(_ed_fin_cache_path, result)
+                return result
+            except Exception as exc:
+                return {"_error": str(exc)}
+
+        def _do_edinet_narratives():
+            if not edinet_docs:
+                return []
+            docs_to_fetch = edinet_docs[:5]
+            tasks = [lambda doc=doc: edinet.extract_narrative_for_doc(doc.doc_id) for doc in docs_to_fetch]
+            texts = run_concurrent(tasks, max_workers=min(5, len(tasks)))
+            narratives = []
+            for doc, text in zip(docs_to_fetch, texts):
+                if text:
+                    narratives.append(f"[{doc.doc_id}]\n{text}")
+                    event("edinet", f"Narrative extracted from {doc.doc_id}", {"doc_id": doc.doc_id})
+            return narratives
+
+        def _do_edinet_segments():
+            if not edinet_docs:
+                return []
+            for doc in edinet_docs[:3]:
+                try:
+                    segs = edinet.extract_segments_for_doc(doc.doc_id)
+                    if segs and len(segs) >= 2:
+                        event("edinet", f"Segments extracted from {doc.doc_id}", {"count": len(segs)})
+                        return segs
+                except Exception:
+                    continue
+            return []
+
+        progress(30, "Extraction", "Extracting financials, narratives & segments")
+        fut_ed_fin = pool.submit(_do_edinet_financials)
+        fut_narratives = pool.submit(_do_edinet_narratives)
+        fut_segments = pool.submit(_do_edinet_segments)
+
+        # ── Gate 4a: jquants financials + prices (likely done by now) ─
+
+        try:
+            jquants_financials = fut_financials.result() if fut_financials else {}
+        except Exception:
+            jquants_financials = {}
+        jquants_financials = jquants_financials or {}
+
+        try:
+            prices = fut_prices.result() if fut_prices else {}
+        except Exception:
+            prices = {}
+        prices = prices or {}
+
+        # ── Gate 4b: narratives → edinet_narrative ────────────────────
+
+        narrative_parts = fut_narratives.result() or []
+        edinet_narrative = "\n\n".join(narrative_parts) if narrative_parts else ""
+        edinet_profile = _extract_profile_from_edinet(edinet_narrative)
+
+        # ── Gate 4c: research_pages → profile data ────────────────────
+
+        research_pages = fut_research.result() or []
+        profile_data, profile_sources = _extract_company_profile(research_pages)
+
+        # Build research_context (without edinet_summary — not yet available;
+        # edinet_narrative is passed separately to LLM so info is not lost)
+        research_context = ""
+        if research_pages:
+            chunks = []
+            for page in research_pages:
+                excerpt = page["text"][:2000]
+                chunks.append(f"Source: {page['title']} ({page['url']})\n{excerpt}")
+            research_context = "\n\n".join(chunks)
+
+        # Build merged_profile (before LLM enrichment)
+        merged_profile = dict(profile_data)
+        for key, value in edinet_profile.items():
+            if key not in merged_profile or not merged_profile.get(key):
+                merged_profile[key] = value
+        _known_hq = KNOWN_CODE_HEAD_OFFICE.get(stock_code)
+        if _known_hq:
+            merged_profile["head_office"] = _known_hq
+
+        # ── Fire BOTH LLM calls in parallel (biggest time saving) ─────
+
+        progress(50, "Analysis", "Running AI analysis (parallel LLM calls)")
+
+        def _do_llm_edinet_all():
+            """Single merged LLM call for insights/risks/governance/projects/ESG."""
+            if not edinet_narrative:
+                return None
+            _cache_doc_ids = "_".join(sorted(d.doc_id for d in edinet_docs[:3])) if edinet_docs else "none"
+            _llm_cache_key = f"llm_edinet_{stock_code}_{_cache_doc_ids}.json"
+            _llm_cache_path = Path(settings.output_dir) / "cache" / _llm_cache_key
+            _cached_llm = load_cache(_llm_cache_path, max_age_seconds=24 * 3600)
+            if _cached_llm and isinstance(_cached_llm, dict) and _cached_llm.get("insights"):
+                progress(55, "Analysis", "Loaded EDINET analysis from cache")
+                return _cached_llm
+            try:
+                llm = LlmClient()
+                progress(55, "Analysis", "Running EDINET analysis (merged call)")
+                combined_raw = llm.extract_edinet_all(resolved_company_name, stock_code, edinet_narrative)
+                combined = _safe_parse_json(combined_raw)
+                if combined:
+                    save_cache(_llm_cache_path, combined)
+                return combined
+            except Exception:
+                return None
+
+        def _do_llm_profile():
+            """LLM enrichment for missing profile fields."""
+            missing_fields = [
+                k for k in ("representative", "founded", "head_office",
+                             "employees", "listed_markets", "core_businesses")
+                if not merged_profile.get(k)
+            ]
+            if not missing_fields:
+                return None
+            try:
+                llm = LlmClient()
+                progress(56, "Analysis", "Synthesizing company profile (GPT)")
+                enriched_raw = llm.extract_profile_from_sources(
+                    resolved_company_name, stock_code, research_context, edinet_narrative
+                )
+                return _safe_parse_json(enriched_raw)
+            except Exception:
+                return None
+
+        fut_llm_edinet = pool.submit(_do_llm_edinet_all)
+        fut_llm_profile = pool.submit(_do_llm_profile)
+
+        # ── Gate 5: edinet_financials → merge, KPIs, valuation ────────
+
+        edinet_financials = _cached_edinet_financials or {}
+        edinet_fin_result = fut_ed_fin.result()
+        if isinstance(edinet_fin_result, dict) and "_error" in edinet_fin_result:
+            if not edinet_financials:
+                edinet_financials = {}
+            if not edinet_error:
+                edinet_error = edinet_fin_result["_error"]
+        elif edinet_fin_result:
+            edinet_financials = edinet_fin_result
+
+        # Determine financials source
+        financials_source = "jquants"
+        if edinet_financials:
+            financials = edinet_financials
+            financials_source = "edinet"
+            if resolved_company_name == "Unknown Company":
+                resolved_company_name = edinet_financials.get("filer_name") or resolved_company_name
+        else:
+            financials = jquants_financials
+            financials_source = "jquants" if jquants_financials else "edinet"
+
+        if company_name and resolved_company_name == "Unknown Company":
+            resolved_company_name = company_name
+
+        prices_error = None
+        if not prices and use_prices:
+            if jquants.api_key or jquants.refresh_token:
+                prices_error = "J-Quants returned empty prices"
+            else:
+                prices_error = "J-Quants API key missing or invalid"
+
+        # Fallback to public CSV if J-Quants returned nothing
+        try:
+            if use_prices and (not prices or not _compute_price_kpis(prices).get("row_count")):
+                progress(57, "Analysis", "Fallback price fetch (Stooq CSV)")
+                csv_prices = jquants.get_prices_fallback_csv(stock_code, from_date=None)
+                if csv_prices and _compute_price_kpis(csv_prices).get("row_count"):
+                    prices = csv_prices
+                    prices_error = None
+        except Exception as exc:
+            if not prices_error:
+                prices_error = f"Fallback price error: {exc}"
+
+        merged_financials = _merge_jquants_edinet(jquants_financials, edinet_financials) if jquants_financials and edinet_financials else (jquants_financials or financials)
+        financial_kpis = _compute_financial_kpis(merged_financials)
+        price_kpis = _compute_price_kpis(prices)
+        price_rows_count = price_kpis.get("row_count") if price_kpis else 0
+
+        # Pre-compute segments for valuation
+        _pre_segment_candidates = _extract_segment_revenue(edinet_narrative)
+        edinet_segments = fut_segments.result() or []
+        if edinet_segments and len(edinet_segments) >= 2:
+            valuation_segments = [
+                {"name": s.get("segment", ""), "revenue": s.get("revenue_mm", 0)}
+                for s in edinet_segments if s.get("revenue_mm")
+            ]
+        else:
+            valuation_segments = _pre_segment_candidates
+
+        # ── SPEED: Start valuation in a DEFERRED daemon thread ──────
+        # Instead of waiting for valuation inside the ThreadPool (blocking
+        # build_report_payload), run it as a background thread so the payload
+        # can return sooner.  build_report_context() will join the valuation
+        # thread WHILE the narrative LLM call runs in parallel — saving
+        # 15-25s by overlapping the two biggest remaining tasks.
+        has_financials = bool(financial_kpis.get("rows"))
+        _valuation_result_holder: Dict[str, Any] = {}
+
+        def _bg_valuation():
+            try:
+                valuation_engine = ValuationEngine()
+                val = valuation_engine.estimate_for_company(
+                    stock_code,
+                    merged_financials,
+                    prices,
+                    listed_info or {},
+                    segments=valuation_segments,
+                    on_event=event,
+                    company_name=resolved_company_name,
+                    sector_hint=company_info.sector if company_info else None,
+                    edinet_narrative=edinet_narrative,
+                )
+                if val:
+                    _valuation_result_holder["data"] = {
+                        "model_type": val.model_type,
+                        "samples": val.samples,
+                        "r2": val.r2,
+                        "predicted_multiple": val.predicted_multiple,
+                        "actual_multiple": val.actual_multiple,
+                        "implied_price": val.implied_price,
+                        "range_low": val.range_low,
+                        "range_high": val.range_high,
+                        "score_z": val.score_z,
+                        "peer_multiple": val.peer_multiple,
+                        "peer_price": val.peer_price,
+                        "peer_range_low": val.peer_range_low,
+                        "peer_range_high": val.peer_range_high,
+                        "dcf_price": val.dcf_price,
+                        "dcf_range_low": val.dcf_range_low,
+                        "dcf_range_high": val.dcf_range_high,
+                        "sotp_price": val.sotp_price,
+                        "sotp_range_low": val.sotp_range_low,
+                        "sotp_range_high": val.sotp_range_high,
+                        "last_price": val.last_price,
+                        "market_cap": val.market_cap,
+                        "shares": val.shares,
+                        "target_price": val.target_price,
+                        "target_low": val.target_low,
+                        "target_high": val.target_high,
+                        "upside_pct": val.upside_pct,
+                        "quality_score": val.quality_score,
+                        "method_count": val.method_count,
+                        "notes": val.notes,
+                        "advisor": val.advisor,
+                        "method_results": val.method_results,
+                        "primary_method": val.primary_method,
+                        "sector_classification": val.sector_classification,
+                        "valuation_narrative": val.valuation_narrative,
+                        "extended_metrics": val.extended_metrics,
+                    }
+            except Exception as exc:
+                print(f"[VALUATION ERROR] {exc}")
+
+        _valuation_thread = None
+        if has_financials:
+            progress(58, "Valuation", "Starting AI valuation (background)")
+            _valuation_thread = _threading.Thread(target=_bg_valuation, daemon=True)
+            _valuation_thread.start()
+
+        # Start peers in background thread (deferred join in build_report_context)
+        _peer_result_holder: Dict[str, Any] = {}
+        _ed_fin_ok = isinstance(edinet_financials, dict) and "_error" not in edinet_financials and edinet_financials
+        _financials_for_peers = jquants_financials or (edinet_financials if _ed_fin_ok else {})
+        _peer_sector_hint = company_info.sector if company_info else None
+        _peer_company_name = (company_info.name if company_info else None) or resolved_company_name or ""
+        try:
+            _pre_web_sectors = fut_web_sec.result()
+        except Exception:
+            _pre_web_sectors = None
+        if not isinstance(_pre_web_sectors, list):
+            _pre_web_sectors = None
+
+        def _bg_fetch_peers():
+            try:
+                _peer_result_holder["data"] = _fetch_peer_benchmarking(
+                    stock_code, _peer_sector_hint, _financials_for_peers,
+                    web_sectors=_pre_web_sectors, company_name=_peer_company_name,
+                )
+            except Exception as exc:
+                print(f"[PEER DEBUG] Background peer fetch failed: {exc}")
+                _peer_result_holder["data"] = {}
+
+        _peer_thread = _threading.Thread(target=_bg_fetch_peers, daemon=True)
+        _peer_thread.start()
+
+        # ── Collect LLM results ───────────────────────────────────────
+
+        edinet_insights: Dict[str, Any] = {}
+        edinet_summary = ""
+        capital_projects: List[Dict[str, Any]] = []
+        esg_data: Dict[str, Any] = {}
+
+        llm_edinet_result = fut_llm_edinet.result()
+        if llm_edinet_result and isinstance(llm_edinet_result, dict):
+            edinet_insights = llm_edinet_result.get("insights") or {}
+            edinet_summary = llm_edinet_result.get("summary") or ""
+            capital_projects_raw = llm_edinet_result.get("capital_projects")
+            if isinstance(capital_projects_raw, list):
+                capital_projects = capital_projects_raw
+            elif isinstance(capital_projects_raw, dict):
+                capital_projects = capital_projects_raw.get("projects") or capital_projects_raw.get("pipeline") or []
+            esg_data = llm_edinet_result.get("esg") or {}
+
+        # Enrich profile with edinet insights (core_businesses from segments)
+        if not merged_profile.get("core_businesses"):
+            segments = edinet_insights.get("business_segments") if isinstance(edinet_insights, dict) else None
+            if isinstance(segments, list) and segments:
+                seg_names = []
+                for s in segments:
+                    if isinstance(s, dict):
+                        name = s.get("name", "")
+                        if name and name != "\u2014":
+                            seg_names.append(name)
+                    elif isinstance(s, str) and s and s != "\u2014":
+                        seg_names.append(s)
+                merged_profile["core_businesses"] = "; ".join(seg_names) or merged_profile.get("core_businesses")
+
+        # Apply LLM profile enrichment
+        llm_profile_result = fut_llm_profile.result()
+        if llm_profile_result and isinstance(llm_profile_result, dict):
+            missing_fields = [
+                k for k in ("representative", "founded", "head_office",
+                             "employees", "listed_markets", "core_businesses")
+                if not merged_profile.get(k)
+            ]
+            for key, value in llm_profile_result.items():
+                if key in missing_fields and value and value != "\u2014":
+                    merged_profile[key] = value
+
+        progress(65, "Analysis", "Data compilation complete")
+
+        # ── Collect remaining web scraper futures ─────────────────────
+
+        try:
+            kabutan_ownership = fut_kab_own.result() or {}
+        except Exception:
+            kabutan_ownership = {}
+        try:
+            kabutan_shareholders = fut_kab_sh.result() or []
+        except Exception:
+            kabutan_shareholders = []
+        try:
+            kabutan_corporate = fut_kab_corp.result() or {}
+        except Exception:
+            kabutan_corporate = {}
+        try:
+            yahoo_corporate = fut_yahoo_corp.result() or {}
+        except Exception:
+            yahoo_corporate = {}
+
+        try:
+            activist_radar = fut_activist.result() or {"filings": [], "has_poison_pill": False}
+        except Exception:
+            activist_radar = {"filings": [], "has_poison_pill": False}
+        if isinstance(activist_radar, dict):
+            activist_radar["has_poison_pill"] = _check_poison_pill(edinet_narrative)
+
+    # ── ThreadPoolExecutor exited — pool tasks complete (valuation runs in background) ──
+
+    # ── Build sources list ────────────────────────────────────────────
     sources = []
     source_id = 1
     seen_urls = set()
@@ -3768,48 +4109,9 @@ def build_report_payload(
         edinet_viewer_url = f"https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?{edinet_docs[0].doc_id}"
         edinet_source_id = source_id_map.get(edinet_viewer_url)
 
-    research_context = ""
-    if research_pages:
-        chunks = []
-        for page in research_pages:
-            excerpt = page["text"][:2000]
-            chunks.append(f"Source: {page['title']} ({page['url']})\n{excerpt}")
-        research_context = "\n\n".join(chunks)
+    # Finalize research_context with edinet_summary (now available)
     if edinet_summary:
         research_context = f"{research_context}\n\nEDINET Summary:\n{edinet_summary}" if research_context else f"EDINET Summary:\n{edinet_summary}"
-
-    merged_profile = dict(profile_data)
-    for key, value in edinet_profile.items():
-        if key not in merged_profile or not merged_profile.get(key):
-            merged_profile[key] = value
-
-    if not merged_profile.get("core_businesses"):
-        segments = edinet_insights.get("business_segments") if isinstance(edinet_insights, dict) else None
-        if isinstance(segments, list) and segments:
-            seg_names = []
-            for s in segments:
-                if isinstance(s, dict):
-                    name = s.get("name", "")
-                    if name and name != "—":
-                        seg_names.append(name)
-                elif isinstance(s, str) and s and s != "—":
-                    seg_names.append(s)
-            merged_profile["core_businesses"] = "; ".join(seg_names) or merged_profile.get("core_businesses")
-
-    # LLM enrichment for missing profile fields (English only)
-    missing_fields = [k for k in ("representative", "founded", "head_office", "employees", "listed_markets", "core_businesses") if not merged_profile.get(k)]
-    if missing_fields:
-        try:
-            progress(66, "Analysis", "Synthesizing company profile (GPT)")
-            llm = LlmClient()
-            enriched_raw = llm.extract_profile_from_sources(resolved_company_name, stock_code, research_context, edinet_narrative)
-            enriched = _safe_parse_json(enriched_raw)
-            if enriched:
-                for key, value in enriched.items():
-                    if key in missing_fields and value and value != "—":
-                        merged_profile[key] = value
-        except Exception:
-            pass
 
     profile_block = _build_profile_block(merged_profile, profile_sources, source_id_map, fallback_source_id=edinet_source_id)
 
@@ -3819,7 +4121,7 @@ def build_report_payload(
         segment_strs = []
         for seg in raw_segments:
             if isinstance(seg, dict):
-                name = seg.get("name", "—")
+                name = seg.get("name", "\u2014")
                 pct = seg.get("pct")
                 segment_strs.append(f"{name} ({pct}%)" if pct else name)
             elif isinstance(seg, str):
@@ -3828,127 +4130,15 @@ def build_report_payload(
             "EDINET Insights:",
             "Business Segments: " + "; ".join(segment_strs),
             "Risk Factors: " + "; ".join(edinet_insights.get("risk_factors") or []),
-            "Governance (board): " + str((edinet_insights.get("governance") or {}).get("board") or "—"),
-            "Governance (auditors): " + str((edinet_insights.get("governance") or {}).get("auditors") or "—"),
-            "Governance (ownership): " + str((edinet_insights.get("governance") or {}).get("ownership") or "—"),
+            "Governance (board): " + str((edinet_insights.get("governance") or {}).get("board") or "\u2014"),
+            "Governance (auditors): " + str((edinet_insights.get("governance") or {}).get("auditors") or "\u2014"),
+            "Governance (ownership): " + str((edinet_insights.get("governance") or {}).get("ownership") or "\u2014"),
         ]
         research_context = f"{research_context}\n\n" + "\n".join(insights_lines)
 
+    # Re-extract segments now that research_context is enriched with insights
     segment_candidates = _extract_segment_revenue(f"{research_context}\n{edinet_narrative}")
 
-    # Prefer EDINET-parsed segments (from HTML tables / XBRL) over regex extraction
-    # for both the SOTP valuation and the segment_candidates used downstream.
-    if edinet_segments and len(edinet_segments) >= 2:
-        # Convert edinet_segments format to segment_candidates format for valuation
-        valuation_segments = [
-            {"name": s.get("segment", ""), "revenue": s.get("revenue_mm", 0)}
-            for s in edinet_segments if s.get("revenue_mm")
-        ]
-    else:
-        valuation_segments = segment_candidates
-
-    # Merge J-Quants and EDINET financial data.
-    # J-Quants has period types (CurPerType) needed for correct ROE annualization,
-    # but often lacks balance sheet & cash flow fields (CFO, CFI, CFF, cash_equiv,
-    # borrowings, capex).  EDINET XBRL has these.  Merge: use J-Quants as base,
-    # supplement each period with EDINET data for missing fields.
-    _jq_stmts = (jquants_financials.get("statements") or jquants_financials.get("data") or []) if jquants_financials else []
-    _ed_stmts = (edinet_financials.get("statements") or edinet_financials.get("data") or []) if edinet_financials else []
-    print(f"[FIN DEBUG] jquants_financials truthy={bool(jquants_financials)}, stmts={len(_jq_stmts) if isinstance(_jq_stmts, list) else '?'}")
-    print(f"[FIN DEBUG] edinet_financials truthy={bool(edinet_financials)}, stmts={len(_ed_stmts) if isinstance(_ed_stmts, list) else '?'}")
-    if _jq_stmts and isinstance(_jq_stmts, list) and _jq_stmts:
-        _sample = _jq_stmts[0] if isinstance(_jq_stmts[0], dict) else {}
-        print(f"[FIN DEBUG] J-Quants sample keys: {sorted(_sample.keys())[:30]}")
-    if _ed_stmts and isinstance(_ed_stmts, list) and _ed_stmts:
-        _sample_ed = _ed_stmts[0] if isinstance(_ed_stmts[0], dict) else {}
-        print(f"[FIN DEBUG] EDINET sample keys: {sorted(_sample_ed.keys())[:30]}")
-    merged_financials = _merge_jquants_edinet(jquants_financials, edinet_financials) if jquants_financials and edinet_financials else (jquants_financials or financials)
-    _merged_stmts = (merged_financials.get("statements") or merged_financials.get("data") or []) if merged_financials else []
-    if _merged_stmts and isinstance(_merged_stmts, list) and _merged_stmts:
-        _sample_m = _merged_stmts[0] if isinstance(_merged_stmts[0], dict) else {}
-        print(f"[FIN DEBUG] Merged sample keys: {sorted(_sample_m.keys())[:30]}")
-        for _fk in ['Revn','Sales','NetSales','OP','NP','TA','Eq','CFO','CFI','CFF','CashEq','BPS','EqAR','ShOutFY','OdP','TotalAssets','Equity','Profit','OperatingProfit','Revenue']:
-            if _fk in _sample_m:
-                print(f"[FIN DEBUG]   {_fk} = {_sample_m[_fk]}")
-    financial_kpis = _compute_financial_kpis(merged_financials)
-    _kpi_rows = financial_kpis.get("rows", [])
-    if _kpi_rows:
-        _kr = _kpi_rows[0]
-        _filled = {k: v for k, v in _kr.items() if v is not None and k not in ('period','period_type','fy_end')}
-        _empty = [k for k, v in _kr.items() if v is None and k not in ('period','period_type','fy_end')]
-        print(f"[FIN DEBUG] KPI row[0]: {len(_filled)} filled, {len(_empty)} empty")
-        print(f"[FIN DEBUG]   filled: {list(_filled.keys())}")
-        print(f"[FIN DEBUG]   empty:  {_empty}")
-    else:
-        print("[FIN DEBUG] WARNING: No KPI rows extracted!")
-    price_kpis = _compute_price_kpis(prices)
-    price_rows_count = price_kpis.get("row_count") if price_kpis else 0
-    valuation_data: Dict[str, Any] = {}
-    # Valuation runs whenever we have financials — it no longer requires J-Quants.
-    # Methods that need peer/ML data gracefully degrade when J-Quants is unavailable.
-    has_financials = bool(financial_kpis.get("rows"))
-    if has_financials:
-        try:
-            progress(70, "Valuation", "Running AI valuation")
-            valuation_engine = ValuationEngine()
-            # Use merged financials for valuation — J-Quants has period types
-            # and share counts, EDINET supplements with cash flow & balance sheet.
-            val_financials = merged_financials
-            valuation = valuation_engine.estimate_for_company(
-                stock_code,
-                val_financials,
-                prices,
-                listed_info or {},
-                segments=valuation_segments,
-                on_event=event,
-                company_name=resolved_company_name,
-                sector_hint=company_info.sector if company_info else None,
-                edinet_narrative=edinet_narrative,
-            )
-            if valuation:
-                valuation_data = {
-                    "model_type": valuation.model_type,
-                    "samples": valuation.samples,
-                    "r2": valuation.r2,
-                    "predicted_multiple": valuation.predicted_multiple,
-                    "actual_multiple": valuation.actual_multiple,
-                    "implied_price": valuation.implied_price,
-                    "range_low": valuation.range_low,
-                    "range_high": valuation.range_high,
-                    "score_z": valuation.score_z,
-                    "peer_multiple": valuation.peer_multiple,
-                    "peer_price": valuation.peer_price,
-                    "peer_range_low": valuation.peer_range_low,
-                    "peer_range_high": valuation.peer_range_high,
-                    "dcf_price": valuation.dcf_price,
-                    "dcf_range_low": valuation.dcf_range_low,
-                    "dcf_range_high": valuation.dcf_range_high,
-                    "sotp_price": valuation.sotp_price,
-                    "sotp_range_low": valuation.sotp_range_low,
-                    "sotp_range_high": valuation.sotp_range_high,
-                    "last_price": valuation.last_price,
-                    "market_cap": valuation.market_cap,
-                    "shares": valuation.shares,
-                    "target_price": valuation.target_price,
-                    "target_low": valuation.target_low,
-                    "target_high": valuation.target_high,
-                    "upside_pct": valuation.upside_pct,
-                    "quality_score": valuation.quality_score,
-                    "method_count": valuation.method_count,
-                    "notes": valuation.notes,
-                    "advisor": valuation.advisor,
-                    "method_results": valuation.method_results,
-                    "primary_method": valuation.primary_method,
-                    "sector_classification": valuation.sector_classification,
-                    "valuation_narrative": valuation.valuation_narrative,
-                    "extended_metrics": valuation.extended_metrics,
-                }
-                progress(76, "Valuation", "Valuation model ready")
-        except Exception as exc:
-            import traceback
-            tb_str = traceback.format_exc()
-            print(f"[VALUATION ERROR] {exc}\n{tb_str}")
-            event("valuation", "Valuation model failed", {"error": str(exc)})
     appendix_tables_md = _render_appendix_tables(financial_kpis, price_kpis)
 
     metrics = {
@@ -3990,8 +4180,7 @@ def build_report_payload(
             warnings.append(f"J-Quants price error: {prices_error}")
         else:
             warnings.append("No price rows from J-Quants.")
-    if settings.ml_enabled and not valuation_data:
-        warnings.append("Valuation model unavailable (insufficient J-Quants coverage).")
+    # Valuation warning deferred to build_report_context (valuation runs in background)
 
     data_health["warnings"] = warnings
 
@@ -4076,7 +4265,7 @@ def build_report_payload(
 
     # Include EDINET-parsed segment data in facts for LLM accuracy
     if edinet_segments and len(edinet_segments) >= 2:
-        seg_lines = ["EDINET Segment Data (parsed from filing — use these as ground truth for revenue_mix):"]
+        seg_lines = ["EDINET Segment Data (parsed from filing \u2014 use these as ground truth for revenue_mix):"]
         for s in edinet_segments:
             seg_name = s.get("segment", "?")
             seg_pct = s.get("pct")
@@ -4084,45 +4273,17 @@ def build_report_payload(
             seg_profit = s.get("profit_mm")
             parts = [f"  - {seg_name}"]
             if seg_rev is not None:
-                parts.append(f"¥{seg_rev:,.0f}M")
+                parts.append(f"\u00a5{seg_rev:,.0f}M")
             if seg_pct is not None:
                 parts.append(f"({seg_pct:.1f}%)")
             if seg_profit is not None:
-                parts.append(f"profit ¥{seg_profit:,.0f}M")
+                parts.append(f"profit \u00a5{seg_profit:,.0f}M")
             seg_lines.append(" ".join(parts))
         facts_summary.extend(seg_lines)
 
-    if valuation_data:
-        facts_summary.append(f"Valuation model: {valuation_data.get('model_type')} samples={valuation_data.get('samples')}")
-        if valuation_data.get("implied_price") is not None:
-            facts_summary.append(f"Model implied price: {valuation_data.get('implied_price'):.0f}")
-        if valuation_data.get("target_price") is not None:
-            facts_summary.append(f"Blended target price: {valuation_data.get('target_price'):.0f}")
+    # Valuation data injected by build_report_context after background join
 
-    # ── Phase E: Peer benchmarking ──
-    progress(78, "Peers", "Fetching peer benchmarking data")
-    peer_benchmarking: Dict[str, Any] = {}
-    try:
-        sector_hint = company_info.sector if company_info else None
-        peer_company_name = (company_info.name if company_info else None) or resolved_company_name or ""
-        pre_web_sectors = phase_c.get("web_sectors")
-        if not isinstance(pre_web_sectors, list):
-            pre_web_sectors = None  # concurrent task failed — will scrape live
-        print(f"[PEER DEBUG] stock={stock_code}, sector_hint={sector_hint!r}, web_sectors={pre_web_sectors}")
-        peer_benchmarking = _fetch_peer_benchmarking(
-            stock_code, sector_hint, financials,
-            web_sectors=pre_web_sectors, company_name=peer_company_name,
-        )
-        print(f"[PEER DEBUG] result: is_real={peer_benchmarking.get('is_real')}, peers={len(peer_benchmarking.get('peers', []))}, medians={list(peer_benchmarking.get('medians', {}).keys())}")
-        if peer_benchmarking.get("is_real"):
-            progress(79, "Peers", f"Found {len(peer_benchmarking.get('peers', []))} peers with financial data")
-        else:
-            progress(79, "Peers", "Peer data incomplete — will use available data")
-    except Exception as exc:
-        print(f"[PEER DEBUG] EXCEPTION: {exc}")
-        import traceback; traceback.print_exc()
-
-    progress(80, "Compilation", "Compiling source list")
+    progress(78, "Compilation", "Compiling payload (peers finishing in background)")
     # Final company_name: JP override if mapped
     final_company_name = KNOWN_CODE_NAME_JP.get(stock_code, resolved_company_name)
 
@@ -4142,23 +4303,27 @@ def build_report_payload(
         "appendix_tables_md": appendix_tables_md,
         "facts_summary": "\n".join(facts_summary),
         "v6_data_block": _build_v6_data_block(financial_kpis),
-        "valuation_block": _build_valuation_block(valuation_data),
-        "valuation_data": valuation_data,
+        "valuation_block": "",  # injected by build_report_context after join
+        "valuation_data": {},   # injected by build_report_context after join
+        "_valuation_thread": _valuation_thread,
+        "_valuation_result_holder": _valuation_result_holder,
         "profile_block": profile_block,
         "profile_data": merged_profile,
         "listed_info": listed_info or {},
         "segment_candidates": segment_candidates,
         "edinet_segments": edinet_segments,
-        "kabutan_ownership": phase_c.get("kabutan_ownership") or {},
+        "kabutan_ownership": kabutan_ownership,
         "kabutan_shareholders": kabutan_shareholders,
-        "kabutan_corporate": phase_c.get("kabutan_corporate") or {},
-        "yahoo_corporate": phase_c.get("yahoo_corporate") or {},
-        "peer_benchmarking": peer_benchmarking,
+        "kabutan_corporate": kabutan_corporate,
+        "yahoo_corporate": yahoo_corporate,
+        "peer_benchmarking": {},  # populated by build_report_context after peer join
+        "_peer_thread": _peer_thread,
+        "_peer_result_holder": _peer_result_holder,
         "activist_radar": activist_radar,
         "edinet_docs": [
             {
                 "doc_id": d.doc_id,
-                "submit_date": d.submit_date or "—",
+                "submit_date": d.submit_date or "\u2014",
                 "description": d.description,
                 "doc_type": d.doc_type,
                 "doc_type_code": d.doc_type_code,
@@ -4187,10 +4352,23 @@ def _is_narrative_valid(narrative: Dict[str, Any]) -> bool:
     """Check if the LLM narrative has the essential fields populated."""
     if not isinstance(narrative, dict):
         return False
-    for key in ("summary_text", "outlook_summary"):
+    # Support both new format (company_profile/business_performance) and legacy (summary_text/outlook_summary)
+    has_profile = False
+    for key in ("company_profile", "summary_text"):
         val = narrative.get(key)
-        if not val or not isinstance(val, str) or len(val.strip()) < 20:
-            return False
+        if val and isinstance(val, str) and len(val.strip()) >= 20:
+            has_profile = True
+            break
+    if not has_profile:
+        return False
+    has_performance = False
+    for key in ("business_performance", "outlook_summary"):
+        val = narrative.get(key)
+        if val and isinstance(val, str) and len(val.strip()) >= 20:
+            has_performance = True
+            break
+    if not has_performance:
+        return False
     for key in ("bull_case", "bear_case"):
         val = narrative.get(key)
         if not isinstance(val, list) or len(val) == 0:
@@ -4228,7 +4406,7 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
     rev_growth = fin_summary.get("revenue_growth")
     op_growth = fin_summary.get("operating_profit_growth")
 
-    # --- summary_text ---
+    # --- company_profile ---
     parts = [f"{company_name} ({stock_code}) operates in the {sector} sector."]
     if revenue:
         part = f"The company reported revenue of ¥{_format_number(revenue)} in the latest fiscal period"
@@ -4238,41 +4416,52 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
     core_biz = profile.get("core_businesses")
     if core_biz:
         parts.append(f"Core business activities include {core_biz}.")
-    summary_text = " ".join(parts)
-
-    # --- company_bullets ---
-    company_bullets = []
-    if revenue and op_margin:
-        quality = "demonstrating solid profitability" if op_margin > 0.08 else "reflecting competitive industry dynamics"
-        company_bullets.append(
-            f"Generated revenue of ¥{_format_number(revenue)} with {op_margin*100:.1f}% operating margin, {quality}."
-        )
     if roe:
         quality = "strong" if roe > 0.10 else "moderate" if roe > 0.05 else "below-average"
-        company_bullets.append(f"ROE of {roe*100:.1f}% indicates {quality} capital efficiency relative to Japanese market peers.")
+        parts.append(f"ROE of {roe*100:.1f}% indicates {quality} capital efficiency relative to Japanese market peers.")
     if eq_ratio:
         stance = "conservative" if eq_ratio > 0.5 else "balanced" if eq_ratio > 0.3 else "leveraged"
-        company_bullets.append(f"Equity ratio of {eq_ratio*100:.0f}% reflects a {stance} balance sheet structure.")
-    if len(company_bullets) < 2:
-        company_bullets.append(f"Listed on the TSE under ticker {stock_code}, operating in the {sector} sector.")
+        parts.append(f"The company maintains a {stance} balance sheet with equity ratio of {eq_ratio*100:.0f}%.")
+    company_profile = " ".join(parts)
 
-    # --- outlook_summary ---
-    outlook_parts = []
+    # --- business_performance ---
+    perf_parts = []
     if rev_growth is not None and revenue:
         direction = "grew" if rev_growth > 0 else "declined"
-        outlook_parts.append(f"{company_name} revenue {direction} {abs(rev_growth)*100:.1f}% YoY to ¥{_format_number(revenue)}")
+        perf_parts.append(f"{company_name} revenue {direction} {abs(rev_growth)*100:.1f}% YoY to ¥{_format_number(revenue)}")
     if op_growth is not None and op_profit:
         direction = "expanding" if op_growth > 0 else "contracting"
-        outlook_parts.append(f"operating profit {direction} {abs(op_growth)*100:.1f}% to ¥{_format_number(op_profit)}")
+        perf_parts.append(f"operating profit {direction} {abs(op_growth)*100:.1f}% to ¥{_format_number(op_profit)}")
     if roe:
-        outlook_parts.append(f"while ROE stands at {roe*100:.1f}%")
-    outlook_summary = ", ".join(outlook_parts) + "." if outlook_parts else f"{company_name} financial performance is detailed in the latest EDINET filings."
+        perf_parts.append(f"ROE stands at {roe*100:.1f}%")
+    business_performance = ", ".join(perf_parts) + "." if perf_parts else f"{company_name} financial performance is detailed in the latest EDINET filings."
     if cfo:
         cfo_ni = ""
         if net_income and net_income > 0:
             ratio = cfo / net_income
             cfo_ni = f" ({ratio:.1f}x net income)" if ratio > 0 else ""
-        outlook_summary += f" Operating cash flow of ¥{_format_number(cfo)}{cfo_ni} provides insight into earnings quality."
+        business_performance += f" Operating cash flow of ¥{_format_number(cfo)}{cfo_ni} provides insight into earnings quality."
+
+    # --- material_note ---
+    material_note = f"{company_name} operates in the {sector} sector — investors should monitor industry-specific regulatory and competitive developments."
+
+    # --- investment_thesis ---
+    investment_thesis = []
+    if revenue and op_margin:
+        quality = "demonstrating solid profitability" if op_margin > 0.08 else "reflecting competitive industry dynamics"
+        investment_thesis.append(
+            f"Generated revenue of ¥{_format_number(revenue)} with {op_margin*100:.1f}% operating margin, {quality}."
+        )
+    if roe and roe > 0.06:
+        investment_thesis.append(
+            f"ROE of {roe*100:.1f}% {'exceeds' if roe > 0.08 else 'approaches'} the typical cost of equity for Japanese companies."
+        )
+    if cfo and cfo > 0:
+        investment_thesis.append(
+            f"Positive operating cash flow of ¥{_format_number(cfo)} supports operations and shareholder returns."
+        )
+    investment_thesis.append(f"Listed on the TSE under ticker {stock_code}, operating in the {sector} sector.")
+    investment_thesis = investment_thesis[:4]
 
     # --- bull_case ---
     bull_case = []
@@ -4283,13 +4472,7 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
         )
     if roe and roe > 0.06:
         bull_case.append(
-            f"ROE of {roe*100:.1f}% {'exceeds' if roe > 0.08 else 'approaches'} the typical cost of equity for Japanese companies, "
-            f"indicating value creation for shareholders."
-        )
-    if cfo and cfo > 0:
-        bull_case.append(
-            f"Positive operating cash flow of ¥{_format_number(cfo)} supports ongoing operations, "
-            f"investment capacity, and potential shareholder returns."
+            f"ROE of {roe*100:.1f}% indicates value creation for shareholders with potential for further improvement."
         )
     if not bull_case:
         bull_case = [
@@ -4301,18 +4484,12 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
     bear_case = []
     if rev_growth is not None and rev_growth < 0:
         bear_case.append(
-            f"Revenue decline of {abs(rev_growth)*100:.1f}% YoY raises concerns about demand sustainability and competitive positioning."
-        )
-    if roe and roe < 0.06:
-        bear_case.append(
-            f"ROE of {roe*100:.1f}% is below typical cost of equity thresholds, suggesting limited shareholder value creation."
+            f"Revenue decline of {abs(rev_growth)*100:.1f}% YoY raises concerns about demand sustainability."
         )
     if op_margin and op_margin < 0.05:
         bear_case.append(
-            f"Operating margin of {op_margin*100:.1f}% indicates limited pricing power or cost pressures that could constrain profitability."
+            f"Operating margin of {op_margin*100:.1f}% indicates limited pricing power or cost pressures."
         )
-    if eq_ratio and eq_ratio < 0.3:
-        bear_case.append(f"Equity ratio of {eq_ratio*100:.0f}% indicates elevated leverage, increasing sensitivity to interest rate changes.")
     if not bear_case:
         bear_case = [
             "Market and macroeconomic conditions may impact future performance.",
@@ -4320,11 +4497,16 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
         ]
 
     return {
-        "summary_text": summary_text,
-        "company_bullets": company_bullets[:3],
-        "outlook_summary": outlook_summary,
-        "bull_case": bull_case[:3],
-        "bear_case": bear_case[:3],
+        "company_profile": company_profile,
+        "business_performance": business_performance,
+        "material_note": material_note,
+        "investment_thesis": investment_thesis[:4],
+        "bull_case": bull_case[:2],
+        "bear_case": bear_case[:2],
+        # Legacy compatibility
+        "summary_text": company_profile,
+        "company_bullets": investment_thesis[:3],
+        "outlook_summary": business_performance,
         "major_shareholders": [],
         "cross_holdings": [],
         "revenue_mix": [],
@@ -4339,6 +4521,30 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
 def generate_dashboard_narrative(payload: Dict, on_progress=None, on_event=None) -> Dict[str, Any]:
     if on_progress:
         on_progress(80, "Drafting", "Generating dashboard narrative")
+
+    # ── SPEED: Cache narrative output (24h TTL) ───────────────────
+    # The narrative LLM call is the single most expensive operation (~15-25s).
+    # Cache it keyed on stock_code + mode + financial data hash so repeat
+    # reports for the same company skip the LLM call entirely.
+    import hashlib
+    _narr_cache_key = None
+    try:
+        _code = payload.get("stock_code", "")
+        _mode = payload.get("report_mode", "full")
+        _facts = payload.get("facts_summary", "")[:2000]
+        _hash = hashlib.md5(f"{_code}_{_mode}_{_facts}".encode()).hexdigest()[:12]
+        _narr_cache_key = f"narrative_{_code}_{_mode}_{_hash}.json"
+        _narr_cache_path = Path(settings.output_dir) / "cache" / _narr_cache_key
+        cached_narrative = load_cache(_narr_cache_path, max_age_seconds=24 * 3600)
+        if cached_narrative and _is_narrative_valid(cached_narrative):
+            if on_progress:
+                on_progress(88, "Drafting", "Loaded narrative from cache")
+            if on_event:
+                on_event("draft_reset", "Draft start (cached)", {"step": "Drafting"})
+            return _sanitize_narrative(cached_narrative)
+    except Exception:
+        pass
+
     llm = LlmClient()
 
     # --- Attempt 1: streaming (for live UI feedback) ---
@@ -4422,6 +4628,14 @@ def generate_dashboard_narrative(payload: Dict, on_progress=None, on_event=None)
             }
         if not narrative.get("ownership_mix") and isinstance(edinet_insights, dict):
             narrative["ownership_mix"] = payload.get("ownership_mix") or {}
+
+    # Save to cache for future runs
+    if _narr_cache_key and _is_narrative_valid(narrative):
+        try:
+            save_cache(Path(settings.output_dir) / "cache" / _narr_cache_key, narrative)
+        except Exception:
+            pass
+
     return _sanitize_narrative(narrative)
 
 
@@ -4655,21 +4869,38 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
     if name_jp_from_map:
         name_jp = name_jp_from_map
     else:
-        # Fallback: prefer Japanese name from profile/listed_info, or EDINET filer_name
-        name_jp = _prefer_japanese_name(
-            profile.get("company_name") or listed_info.get("CompanyName") or payload.get("company_name")
-        )
+        # Try J-Quants listed_info — field is "CoName" (abbreviated) or "CompanyName"
+        _li_name = listed_info.get("CoName") or listed_info.get("CompanyName") or ""
+        if _li_name and _contains_japanese(_li_name):
+            name_jp = _li_name
+        else:
+            # Fallback: prefer Japanese name from profile, or EDINET filer_name
+            name_jp = _prefer_japanese_name(
+                profile.get("company_name") or _li_name or payload.get("company_name")
+            )
         # Also try EDINET filer_name which is usually in Japanese
         edinet_filer = (payload.get("edinet_financials") or {}).get("filer_name")
         if edinet_filer and _contains_japanese(edinet_filer):
             name_jp = edinet_filer
+        # If name_jp is missing or has no Japanese, try get_listed_info CoName from J-Quants
+        if not name_jp or not _contains_japanese(name_jp):
+            try:
+                from app.services.jquants import JQuantsClient
+                _jq = JQuantsClient()
+                _li_fallback = _jq.get_listed_info(code)
+                _co_name = (_li_fallback or {}).get("CoName") or ""
+                if _co_name and _contains_japanese(_co_name):
+                    name_jp = _co_name
+            except Exception:
+                pass
         # Keep Japanese name as-is — do NOT translate it
 
     if name_en_from_map:
         name_en = name_en_from_map
     else:
         # Fallback: prefer explicit English name fields
-        name_en = profile.get("company_name_en") or listed_info.get("CompanyNameEnglish")
+        # J-Quants uses "CoNameEn" (abbreviated) or "CompanyNameEnglish"
+        name_en = profile.get("company_name_en") or listed_info.get("CoNameEn") or listed_info.get("CompanyNameEnglish")
         # If name_en is empty, translate name_jp to English as fallback
         if not name_en and name_jp and _contains_japanese(name_jp):
             name_en = _translate_short_text(name_jp) or name_jp
@@ -4789,6 +5020,14 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
         kpi = clean_kpi
         split_multiplier = clean_kpi.get("split_multiplier", 1.0) or 1.0
     else:
+        # Compute EV/EBITDA for fallback path
+        _fallback_ev_ebitda = None
+        _op = latest.get("operating_profit")
+        if _op and _op > 0 and market_cap is not None:
+            _borrowings = latest.get("borrowings") or 0
+            _cash = latest.get("cash_equiv") or 0
+            _ev = market_cap + (_borrowings - _cash)
+            _fallback_ev_ebitda = _ev / _op
         kpi = {
             "price": last_price,
             "market_cap_raw": market_cap,
@@ -4801,6 +5040,7 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             "equity_ratio": equity_ratio,
             "ebit_pct": None,
             "ocf_pct": None,
+            "ev_ebitda": _fallback_ev_ebitda,
             "market_cap_display": None,
         }
         if market_cap is not None:
@@ -4810,10 +5050,17 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             else:
                 kpi["market_cap_display"] = f"¥{market_cap/1_000_000_000_000:.2f}T"
                 kpi["market_cap"] = market_cap / 1_000_000_000_000  # numeric in trillions
-    
+
     # Ensure avg_volume is in kpi
     if avg_volume:
         kpi["avg_volume"] = avg_volume
+
+    # Add price_date and per-share metrics for sidebar
+    kpi["price_date"] = price_kpis.get("latest_date")
+    if eps is not None:
+        kpi.setdefault("eps", eps)
+    if dps is not None:
+        kpi.setdefault("dps", dps)
 
     # ETF-specific: add returns data to KPI for template use
     if is_etf:
@@ -5411,6 +5658,14 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             company_info.get("sector") or payload.get("sector") or _classify_sector_stub(payload.get("stock_code"), "Homebuilding / Residential Real Estate"),
             60,
         )
+    # Sector code (TOPIX-33 sector number) for header display
+    _sector_code = listed_info.get("Sector33Code") or listed_info.get("S33Cd") or ""
+    if _sector_code:
+        try:
+            _sector_code = str(int(str(_sector_code).strip()))
+        except (ValueError, TypeError):
+            _sector_code = ""
+
     # Detect accounting standard from DocType if AccountingStandard is missing
     acct_std = listed_info.get("AccountingStandard")
     if not acct_std:
@@ -5431,7 +5686,32 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
         if not acct_std:
             acct_std = "Japan GAAP"
     safe_acct = _clean_header_name(acct_std, 30)
-    safe_fy = _clean_header_name(profile.get("fiscal_year_end") or "FY End March", 30)
+    # Derive FY end month from the most recent CurFYEn in financial data
+    # CurFYEn can be "2024-08-31" (dashed) or "20240831" (compact)
+    _fy_end_str = profile.get("fiscal_year_end") or ""
+    if not _fy_end_str:
+        raw_fin_fy = payload.get("financials_raw") or {}
+        fin_data_fy = raw_fin_fy.get("data") or raw_fin_fy.get("statements") or []
+        if isinstance(fin_data_fy, list) and fin_data_fy:
+            for _fy_stmt in reversed(fin_data_fy):
+                _fy_en = (_fy_stmt.get("CurFYEn") or "").replace("/", "-").strip()
+                if not _fy_en:
+                    continue
+                try:
+                    # Normalise compact YYYYMMDD → YYYY-MM-DD
+                    if len(_fy_en) == 8 and _fy_en.isdigit():
+                        _fy_en = f"{_fy_en[:4]}-{_fy_en[4:6]}-{_fy_en[6:8]}"
+                    if len(_fy_en) >= 7 and _fy_en[4] == "-":
+                        _fy_month = int(_fy_en[5:7])
+                        _month_names = {1:"January",2:"February",3:"March",4:"April",5:"May",6:"June",
+                                        7:"July",8:"August",9:"September",10:"October",11:"November",12:"December"}
+                        _fy_end_str = f"FY End {_month_names.get(_fy_month, 'March')}"
+                except (ValueError, IndexError):
+                    pass
+                break
+        if not _fy_end_str:
+            _fy_end_str = "FY End March"
+    safe_fy = _clean_header_name(_fy_end_str, 30)
 
     return {
         "is_etf": is_etf,
@@ -5446,6 +5726,7 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             "name_jp": safe_name_jp,
             "name_en": safe_name_en,
             "sector": safe_sector,
+            "sector_code": _sector_code,
             "exchange": safe_exchange,
             "accounting_standard": safe_acct,
             "fiscal_year_end": safe_fy,
@@ -5453,11 +5734,17 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
         },
         "kpi_ribbon": kpi,
         "narrative_outlook": {
-            "summary_text": narrative.get("summary_text") or "",
-            "company_bullets": narrative.get("company_bullets") or [],
-            "outlook_summary": narrative.get("outlook_summary") or "",
+            # New format fields
+            "company_profile": narrative.get("company_profile") or narrative.get("summary_text") or "",
+            "business_performance": narrative.get("business_performance") or narrative.get("outlook_summary") or "",
+            "material_note": narrative.get("material_note") or "",
+            "investment_thesis": narrative.get("investment_thesis") or narrative.get("company_bullets") or [],
             "bull_case": narrative.get("bull_case") or [],
             "bear_case": narrative.get("bear_case") or [],
+            # Legacy compatibility
+            "summary_text": narrative.get("company_profile") or narrative.get("summary_text") or "",
+            "company_bullets": narrative.get("investment_thesis") or narrative.get("company_bullets") or [],
+            "outlook_summary": narrative.get("business_performance") or narrative.get("outlook_summary") or "",
         },
         "charts_data": {
             "roe": roe_series,
@@ -5465,6 +5752,7 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             "dps": dps_series,
             "ownership_mix": ownership_mix,
         },
+        "geographic_mix": narrative.get("geographic_mix") or {},
         "income_statement": income_statement,
         "column_1_holdings": {
             "major_shareholders": major_shareholders,
@@ -5521,6 +5809,8 @@ def build_report_context(
     on_progress=None,
     on_event=None,
 ) -> Dict:
+    import threading as _ctx_threading
+
     payload = build_report_payload(
         stock_code,
         company_name,
@@ -5528,7 +5818,77 @@ def build_report_context(
         on_progress=on_progress,
         on_event=on_event,
     )
-    narrative = generate_dashboard_narrative(payload, on_progress=on_progress, on_event=on_event)
+
+    # ── SPEED: Three-way parallel overlap ──
+    # 1. Narrative LLM call (15-25s)    ↗
+    # 2. Valuation model (15-60s)       → all run simultaneously
+    # 3. Peer benchmarking (10-30s)     ↘
+    # Previously narrative waited for valuation to finish first.
+    # Now they overlap, saving 15-25s on every report.
+
+    _peer_thread = payload.pop("_peer_thread", None)
+    _peer_result_holder = payload.pop("_peer_result_holder", None)
+    _valuation_thread = payload.pop("_valuation_thread", None)
+    _valuation_result_holder = payload.pop("_valuation_result_holder", None)
+
+    # Start narrative generation IMMEDIATELY (doesn't need valuation or peer data)
+    _narrative_holder: Dict[str, Any] = {}
+
+    def _bg_narrative():
+        try:
+            _narrative_holder["data"] = generate_dashboard_narrative(
+                payload, on_progress=on_progress, on_event=on_event,
+            )
+        except Exception:
+            _narrative_holder["data"] = {}
+
+    _narr_thread = _ctx_threading.Thread(target=_bg_narrative, daemon=True)
+    _narr_thread.start()
+
+    # Join valuation WHILE narrative is running — poll with progress ticks
+    if _valuation_thread:
+        try:
+            tick = 0
+            while _valuation_thread.is_alive():
+                _valuation_thread.join(timeout=5)
+                tick += 1
+                if _valuation_thread.is_alive() and on_progress:
+                    # Show increasing progress: 58 → 75 over ~2 min
+                    vpct = min(58 + tick, 75)
+                    on_progress(vpct, "Valuation", "Computing valuation model...")
+            valuation_data = (_valuation_result_holder or {}).get("data") or {}
+            if valuation_data:
+                payload["valuation_data"] = valuation_data
+                payload["valuation_block"] = _build_valuation_block(valuation_data)
+                if on_progress:
+                    on_progress(76, "Valuation", "Valuation model ready")
+        except Exception:
+            pass
+
+    # Add valuation warning if applicable
+    if settings.ml_enabled and not payload.get("valuation_data"):
+        dh = payload.get("data_health") or {}
+        w = dh.get("warnings") or []
+        w.append("Valuation model unavailable (insufficient J-Quants coverage).")
+        dh["warnings"] = w
+        payload["data_health"] = dh
+
+    # Join peer thread while narrative still runs
+    if _peer_thread:
+        try:
+            _peer_thread.join(timeout=120)
+            peer_benchmarking = (_peer_result_holder or {}).get("data") or {}
+            payload["peer_benchmarking"] = peer_benchmarking
+            if peer_benchmarking.get("is_real"):
+                if on_progress:
+                    on_progress(79, "Peers", f"Found {len(peer_benchmarking.get('peers', []))} peers")
+        except Exception:
+            payload["peer_benchmarking"] = {}
+
+    # Wait for narrative to complete
+    _narr_thread.join(timeout=300)
+    narrative = _narrative_holder.get("data") or {}
+
     dashboard = build_dashboard_context(payload, narrative)
     html_body = ""
 

@@ -13,6 +13,7 @@ class Settings:
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4.1")
     openai_admin_key: str = os.getenv("OPENAI_ADMIN_KEY", "")
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    anthropic_narrative_model: str = os.getenv("ANTHROPIC_NARRATIVE_MODEL", "claude-sonnet-4-6")
 
     serp_provider: str = os.getenv("SERP_PROVIDER", "serpapi")
     serp_api_key: str = os.getenv("SERP_API_KEY", "")
@@ -47,9 +48,9 @@ class Settings:
     usage_lookback_days: int = int(os.getenv("USAGE_LOOKBACK_DAYS", "30"))
 
     ml_enabled: bool = os.getenv("ML_ENABLED", "true").lower() == "true"
-    ml_max_tickers: int = int(os.getenv("ML_MAX_TICKERS", "200"))
+    ml_max_tickers: int = int(os.getenv("ML_MAX_TICKERS", "50"))
     ml_cache_days: int = int(os.getenv("ML_CACHE_DAYS", "7"))
-    ml_min_samples: int = int(os.getenv("ML_MIN_SAMPLES", "30"))
+    ml_min_samples: int = int(os.getenv("ML_MIN_SAMPLES", "15"))
 
     dcf_wacc: float = float(os.getenv("DCF_WACC", "0.08"))
     dcf_terminal_growth: float = float(os.getenv("DCF_TERMINAL_GROWTH", "0.015"))

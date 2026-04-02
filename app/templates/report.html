@@ -30,54 +30,74 @@
     .header {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
-      padding: 6px 8px;
-      border-bottom: 1px solid #e0e0e0;
-      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border-top: 3px solid #1a1a2e;
+      border-bottom: 1px solid #ddd;
+      gap: 10px;
     }
     .ticker-box {
-      background: #111;
+      background: #1a1a2e;
       color: #fff;
       font-weight: 700;
-      font-size: 20px;
-      padding: 6px 8px;
-      min-width: 56px;
+      font-size: 18px;
+      padding: 7px 10px;
+      min-width: 52px;
       text-align: center;
       font-family: "Roboto Slab", serif;
+      letter-spacing: 0.5px;
+      line-height: 1;
     }
     .company {
       flex: 1;
     }
     .company .jp {
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 700;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
     }
     .company .en {
-      font-size: 10px;
-      color: #666;
+      font-size: 9.5px;
+      color: #888;
+      margin-top: 1px;
     }
     .meta {
       text-align: right;
       min-width: 170px;
     }
     .meta .sector {
-      font-weight: 700;
-      font-size: 10px;
+      display: inline-block;
+      font-weight: 600;
+      font-size: 9px;
+      color: #444;
+      border: 1px solid #ccc;
+      padding: 1px 6px;
+      border-radius: 2px;
+      letter-spacing: 0.02em;
+    }
+    .meta .sector-code {
+      font-weight: 400;
+      color: #999;
+      margin-left: 2px;
     }
     .meta .meta-line {
-      color: #666;
-      margin-top: 2px;
+      color: #888;
+      margin-top: 3px;
+      font-size: 8.5px;
     }
     .tag {
       display: inline-block;
       margin-top: 4px;
-      background: #e6f6e6;
-      color: #0a7a0a;
-      border: 1px solid #9ad49a;
-      border-radius: 999px;
-      padding: 2px 6px;
+      margin-left: 3px;
+      background: #f0f5f0;
+      color: #2d6a2d;
+      border: 1px solid #c5dac5;
+      border-radius: 2px;
+      padding: 1px 5px;
       font-weight: 600;
-      font-size: 8px;
+      font-size: 7.5px;
+      letter-spacing: 0.04em;
     }
 
     .kpi-row {
@@ -106,19 +126,90 @@
     .kpi-value.green { color: #00aa00; }
 
     .summary-block {
-      padding: 6px 8px 4px;
+      padding: 8px 10px 6px;
       border-bottom: 1px solid #e0e0e0;
     }
-    .summary-block p { margin: 2px 0 4px; text-align: justify; }
-    .summary-block ul { margin: 0 0 4px 14px; padding: 0; }
-    .summary-block li { margin-bottom: 2px; }
+    .summary-block p { margin: 0; text-align: justify; line-height: 1.45; color: #222; }
+    .summary-block ul { margin: 0; padding: 0; list-style: none; }
+    .summary-block li { margin-bottom: 4px; padding-left: 10px; position: relative; line-height: 1.4; }
+    .summary-block li::before { content: "\2022"; position: absolute; left: 0; color: #888; font-size: 8px; }
 
-    .outlook {
-      margin-top: 4px;
-      border: 1px solid #e0e0e0;
-      background: #f2f2f2;
-      padding: 6px;
+    /* ── Narrative section labels ── */
+    .narr-label {
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #aaa;
+      margin: 0;
+      padding-bottom: 3px;
+      border-bottom: 1px solid #ddd;
     }
+    .narr-section { margin-top: 8px; }
+    .narr-section:first-child { margin-top: 0; }
+    .narr-section p { margin-top: 4px; }
+
+    /* ── Material note callout ── */
+    .material-callout {
+      margin: 8px 0 4px;
+      padding: 5px 8px;
+      border-left: 2.5px solid #b91c1c;
+      background: #fef2f2;
+    }
+    .material-callout .narr-label { color: #991b1b; border-bottom-color: #fca5a5; }
+    .material-callout p { margin-top: 3px; font-style: italic; color: #333; }
+
+    /* ── Investment thesis numbered list ── */
+    .thesis-list { counter-reset: thesis; list-style: none; margin: 4px 0 0; padding: 0; }
+    .thesis-list li {
+      counter-increment: thesis;
+      padding-left: 16px;
+      position: relative;
+      margin-bottom: 5px;
+      line-height: 1.4;
+    }
+    .thesis-list li::before {
+      content: counter(thesis);
+      position: absolute;
+      left: 0;
+      font-weight: 700;
+      font-size: 8px;
+      color: #1a3a5c;
+      font-family: "Roboto Slab", serif;
+      width: 12px;
+      text-align: center;
+    }
+
+    /* ── Bull / Bear grid ── */
+    .bullbear {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      margin-top: 8px;
+      border-top: 1px solid #e8e8e8;
+    }
+    .bull-col, .bear-col { padding: 6px 8px 5px; }
+    .bull-col { border-right: 1px solid #e8e8e8; }
+    .bb-label {
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+    .bb-label.bull { color: #15803d; }
+    .bb-label.bear { color: #b91c1c; }
+    .bullbear ul { margin: 0; padding: 0; list-style: none; }
+    .bullbear li {
+      margin-bottom: 4px;
+      padding-left: 8px;
+      position: relative;
+      line-height: 1.4;
+    }
+    .bull-col li::before { content: "\25B2"; position: absolute; left: 0; font-size: 5px; top: 2px; color: #15803d; }
+    .bear-col li::before { content: "\25BC"; position: absolute; left: 0; font-size: 5px; top: 2px; color: #b91c1c; }
+
+    /* Legacy compat — keep .outlook-header for non-narrative uses */
     .outlook-header {
       background: #222;
       color: #fff;
@@ -129,16 +220,6 @@
       margin-bottom: 4px;
       letter-spacing: 0.1em;
     }
-    .bullbear {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 4px;
-    }
-    .bullbear h4 { margin: 0 0 2px; font-size: 9px; }
-    .bullbear ul { margin: 0 0 0 14px; padding: 0; }
-    .bull { color: #00aa00; font-weight: 700; }
-    .bear { color: #cc0000; font-weight: 700; }
 
     .charts {
       display: grid;
@@ -413,6 +494,108 @@
     .rev-mix-name {
       max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle;
     }
+
+    /* ── Two-column top section (narrative + sidebar) ── */
+    .top-section {
+      display: flex;
+      border-bottom: 1px solid #ddd;
+    }
+    .top-left {
+      flex: 65;
+      padding: 10px 12px 8px;
+      border-right: 1px solid #e8e8e8;
+    }
+    .top-left p { margin: 0; text-align: justify; line-height: 1.5; color: #1a1a1a; }
+    .top-left .narr-p { margin-top: 8px; }
+    .top-left .narr-p:first-child { margin-top: 0; }
+    .top-left ul { margin: 0; padding: 0; list-style: none; }
+    .top-left li { margin-bottom: 3px; padding-left: 10px; position: relative; line-height: 1.4; }
+    .top-left li::before { content: "\2022"; position: absolute; left: 0; color: #333; font-size: 8px; }
+    /* Override thesis numbering → bullets in company layout */
+    .top-left .thesis-list { counter-reset: none; }
+    .top-left .thesis-list li { counter-increment: none; }
+    .top-left .thesis-list li::before { content: "\2022"; font-weight: 400; font-family: "Inter", sans-serif; color: #333; }
+    /* Override bull/bear triangles → bullets in company layout */
+    .top-left .bull-col li::before { content: "\2022"; color: #15803d; font-size: 8px; top: 0; }
+    .top-left .bear-col li::before { content: "\2022"; color: #b91c1c; font-size: 8px; top: 0; }
+    .top-right {
+      flex: 35;
+      padding: 0;
+      background: #fafafa;
+      font-size: 8px;
+    }
+    .sidebar-group {
+      padding: 5px 8px 4px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+    .sidebar-group:last-child { border-bottom: none; }
+    .sidebar-group-label {
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #aaa;
+      margin-bottom: 3px;
+    }
+    .sidebar-metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 1.5px 0;
+    }
+    .sidebar-metric-label {
+      color: #333;
+      font-size: 8.5px;
+      font-weight: 500;
+    }
+    .sidebar-metric-value {
+      font-family: "Roboto Slab", serif;
+      font-weight: 700;
+      font-size: 11px;
+      color: #1a1a1a;
+      font-variant-numeric: tabular-nums;
+    }
+    .sidebar-suffix {
+      font-size: 8px;
+      font-weight: 400;
+      color: #999;
+    }
+    .sidebar-price-value {
+      font-family: "Roboto Slab", serif;
+      font-weight: 700;
+      font-size: 20px;
+      color: #1a1a2e;
+      letter-spacing: -0.5px;
+    }
+    /* Bottom data row: Revenue by Segment + Geographic Mix */
+    .bottom-data-row {
+      display: flex;
+      gap: 16px;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #e8e8e8;
+    }
+    .bottom-data-col { flex: 1; }
+    .bottom-data-col:first-child { flex: 1.6; }
+    .bottom-data-label {
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #aaa;
+      margin-bottom: 4px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 2px;
+    }
+    .bottom-data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 8px;
+    }
+    .bottom-data-table td {
+      padding: 2px 0;
+      border: none;
+    }
     .etf-badge {
       display: inline-block;
       background: #0EA5E9;
@@ -459,16 +642,16 @@
         {% endif %}
       </div>
       <div class="meta">
-        <div class="sector">{{ (hdr.sector or '—')[:60] }}</div>
+        <div class="sector">{{ (hdr.sector or '—')[:60] }}{% if hdr.sector_code %}<span class="sector-code">#{{ hdr.sector_code }}</span>{% endif %}</div>
         <div class="meta-line">{{ (hdr.exchange or 'TSE')[:60] }} · {{ (hdr.accounting_standard or 'Japan GAAP')[:30] }} · {{ (hdr.fiscal_year_end or 'FY End March')[:30] }}</div>
         {% if hdr.tags %}
-          {% for tag in hdr.tags %}<span class="tag">✓ {{ tag }}</span>{% endfor %}
+          {% for tag in hdr.tags %}<span class="tag">{{ tag }}</span>{% endfor %}
         {% endif %}
       </div>
     </div>
 
+    {% if dashboard.is_etf %}
     <div class="kpi-row">
-      {% if dashboard.is_etf %}
       {# ── ETF KPI row ── #}
       <div class="kpi">
         <div class="kpi-label">Price</div>
@@ -502,81 +685,205 @@
         <div class="kpi-label">Avg Vol (90d)</div>
         <div class="kpi-value mono">{% if kpi.avg_volume is defined and kpi.avg_volume is not none %}{{ '{:,.0f}'.format(kpi.avg_volume) }}{% else %}—{% endif %}</div>
       </div>
-      {% else %}
-      {# ── Company KPI row ── #}
-      <div class="kpi">
-        <div class="kpi-label">Price</div>
-        <div class="kpi-value mono">{% if kpi.price is defined and kpi.price is not none %}¥{{ '{:,.0f}'.format(kpi.price) }}{% else %}—{% endif %}</div>
+    </div>
+    {# ── ETF summary narrative (full-width) ── #}
+    <div class="summary-block">
+      <div class="narr-section">
+        <div class="narr-label">Company Profile</div>
+        <p>{{ dashboard.narrative_outlook.company_profile | default(dashboard.narrative_outlook.summary_text, true) | default("—", true) }}</p>
       </div>
-      <div class="kpi">
-        <div class="kpi-label">Market Cap</div>
-        {% if kpi.market_cap_display %}
-          <div class="kpi-value mono">{{ kpi.market_cap_display }}</div>
-        {% elif kpi.market_cap is defined and kpi.market_cap is not none %}
-          {% if kpi.market_cap < 1_000_000_000_000 %}
-            <div class="kpi-value mono">¥{{ '{:.1f}'.format(kpi.market_cap/1e9) }}B</div>
-          {% else %}
-            <div class="kpi-value mono">¥{{ '{:.2f}'.format(kpi.market_cap/1e12) }}T</div>
-          {% endif %}
-        {% else %}
-          <div class="kpi-value mono">—</div>
-        {% endif %}
+      <div class="narr-section">
+        <div class="narr-label">Business Performance</div>
+        <p>{{ dashboard.narrative_outlook.business_performance | default(dashboard.narrative_outlook.outlook_summary, true) | default("—", true) }}</p>
       </div>
-      <div class="kpi">
-        <div class="kpi-label">P/B Ratio</div>
-        <div class="kpi-value mono">{% if kpi.pbr is defined and kpi.pbr is not none %}{{ '{:.2f}'.format(kpi.pbr) }}x{% elif kpi.pb_value is defined and kpi.pb_value is not none %}{{ '{:.2f}'.format(kpi.pb_value) }}x{% else %}—{% endif %}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">P/E Ratio</div>
-        <div class="kpi-value mono">{% if kpi.per is defined and kpi.per is not none %}{{ '{:.1f}'.format(kpi.per) }}x{% else %}—{% endif %}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">ROE (Latest)</div>
-        <div class="kpi-value mono {{ 'green' if kpi.roe is defined and kpi.roe is not none and kpi.roe > 0 else '' }}">{% if kpi.roe is defined and kpi.roe is not none %}{{ '{:.1f}'.format(kpi.roe*100) }}%{% else %}—{% endif %}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Div Yield</div>
-        <div class="kpi-value mono">{% if kpi.div_yield is defined and kpi.div_yield is not none %}{{ '{:.1f}'.format(kpi.div_yield*100) }}%{% else %}—{% endif %}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">BPS</div>
-        <div class="kpi-value mono">{% if kpi.bps is defined and kpi.bps is not none %}¥{{ '{:,.0f}'.format(kpi.bps) }}{% else %}—{% endif %}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Equity Ratio</div>
-        <div class="kpi-value mono">{% if kpi.equity_ratio is defined and kpi.equity_ratio is not none %}{{ '{:.0f}'.format(kpi.equity_ratio*100) }}%{% else %}—{% endif %}</div>
+      {% if dashboard.narrative_outlook.material_note %}
+      <div class="material-callout">
+        <div class="narr-label">Material Note</div>
+        <p>{{ dashboard.narrative_outlook.material_note }}</p>
       </div>
       {% endif %}
+      <div class="narr-section">
+        <div class="narr-label">Investment Thesis</div>
+        <ul class="thesis-list">
+          {% for item in dashboard.narrative_outlook.investment_thesis | default(dashboard.narrative_outlook.company_bullets, true) | default([], true) %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div class="bullbear">
+        <div class="bull-col">
+          <div class="bb-label bull">BULL CASE</div>
+          <ul>
+            {% for item in dashboard.narrative_outlook.bull_case | default([], true) %}<li>{{ item }}</li>{% endfor %}
+          </ul>
+        </div>
+        <div class="bear-col">
+          <div class="bb-label bear">BEAR CASE</div>
+          <ul>
+            {% for item in dashboard.narrative_outlook.bear_case | default([], true) %}<li>{{ item }}</li>{% endfor %}
+          </ul>
+        </div>
+      </div>
     </div>
 
-    <div class="summary-block">
-      <p style="text-align:justify; margin:4px 0 6px;">{{ dashboard.narrative_outlook.summary_text | default("—", true) }}</p>
-      {% if dashboard.narrative_outlook.company_bullets %}
-      <ul style="margin:0 0 6px 14px; padding:0;">
-        {% for item in dashboard.narrative_outlook.company_bullets %}
-          <li style="margin-bottom:3px;">{{ item }}</li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-      <div class="outlook">
-        <div class="outlook-header">OUTLOOK</div>
-        <p style="text-align:justify; margin:4px 0 6px;">{{ dashboard.narrative_outlook.outlook_summary | default("—", true) }}</p>
+    {% else %}
+    {# ══════════════════════════════════════════════════════════════
+       COMPANY: Two-column layout — Narrative (left) + Metrics Sidebar (right)
+       Matches Nissan Chemical / Fanuc target format
+       ══════════════════════════════════════════════════════════════ #}
+    {% set si = dashboard.column_3_market.stock_info|default({}, true) %}
+    {% set week_low = si.week_52_low if si else none %}
+    {% set week_high = si.week_52_high if si else none %}
+    {% set geo = dashboard.geographic_mix|default({}, true) %}
+    {% set rev_mix = dashboard.column_2_balance.revenue_mix | default([], true) %}
+    <div class="top-section">
+      {# ── Left column: Narrative with inline labels ── #}
+      <div class="top-left">
+        <p class="narr-p"><strong>Company Profile</strong> — {{ dashboard.narrative_outlook.company_profile | default(dashboard.narrative_outlook.summary_text, true) | default("—", true) }}</p>
+
+        <p class="narr-p"><strong>Business Performance</strong> — {{ dashboard.narrative_outlook.business_performance | default(dashboard.narrative_outlook.outlook_summary, true) | default("—", true) }}</p>
+
+        {% if dashboard.narrative_outlook.material_note %}
+        <p class="narr-p"><strong>Material Note</strong> — {{ dashboard.narrative_outlook.material_note }}</p>
+        {% endif %}
+
+        <div style="margin-top: 6px;">
+          <p class="narr-p" style="margin-bottom:2px;"><strong>Investment Thesis</strong></p>
+          <ul class="thesis-list">
+            {% for item in dashboard.narrative_outlook.investment_thesis | default(dashboard.narrative_outlook.company_bullets, true) | default([], true) %}
+              <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+
         <div class="bullbear">
-          <div>
-            <h4 class="bull">BULL</h4>
+          <div class="bull-col">
+            <div class="bb-label bull">BULL CASE</div>
             <ul>
-              {% for item in dashboard.narrative_outlook.bull_case | default([], true) %}<li style="margin-bottom:3px;">{{ item }}</li>{% endfor %}
+              {% for item in dashboard.narrative_outlook.bull_case | default([], true) %}<li>{{ item }}</li>{% endfor %}
             </ul>
           </div>
-          <div>
-            <h4 class="bear">BEAR</h4>
+          <div class="bear-col">
+            <div class="bb-label bear">BEAR CASE</div>
             <ul>
-              {% for item in dashboard.narrative_outlook.bear_case | default([], true) %}<li style="margin-bottom:3px;">{{ item }}</li>{% endfor %}
+              {% for item in dashboard.narrative_outlook.bear_case | default([], true) %}<li>{{ item }}</li>{% endfor %}
             </ul>
+          </div>
+        </div>
+
+        {# ── Revenue by Segment + Geographic Mix at bottom of left column ── #}
+        {% if rev_mix or (geo and geo.overseas_pct is defined and geo.overseas_pct is not none) %}
+        <div class="bottom-data-row">
+          {% if rev_mix %}
+          <div class="bottom-data-col">
+            <div class="bottom-data-label">Revenue by Segment</div>
+            <table class="bottom-data-table">
+              {% for item in rev_mix %}
+              <tr>
+                <td style="color:#333;">{{ item.segment[:35] }}</td>
+                <td style="text-align:right; font-weight:600; font-family:'Roboto Slab',serif; width:36px;">{% if item.pct is defined and item.pct is not none %}{{ '{:.0f}'.format(item.pct) }}%{% else %}—{% endif %}</td>
+                <td style="text-align:right; color:#777; font-family:'Roboto Slab',serif; font-variant-numeric:tabular-nums; padding-left:6px;">{% if item.revenue_mm is defined and item.revenue_mm is not none %}¥{{ '{:,.0f}'.format(item.revenue_mm) }}mn{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </table>
+          </div>
+          {% endif %}
+          {% if geo and geo.overseas_pct is defined and geo.overseas_pct is not none %}
+          <div class="bottom-data-col">
+            <div class="bottom-data-label">Geographic Mix</div>
+            <table class="bottom-data-table">
+              <tr>
+                <td>Overseas</td>
+                <td style="text-align:right; font-weight:600; font-family:'Roboto Slab',serif;">{{ '{:.0f}'.format(geo.overseas_pct) }}%</td>
+              </tr>
+              {% if geo.domestic_pct is defined and geo.domestic_pct is not none %}
+              <tr>
+                <td>Domestic</td>
+                <td style="text-align:right; font-weight:600; font-family:'Roboto Slab',serif;">{{ '{:.0f}'.format(geo.domestic_pct) }}%</td>
+              </tr>
+              {% endif %}
+            </table>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+
+      {# ── Right column: Metrics Sidebar ── #}
+      <div class="top-right">
+        {# ── PRICE ── #}
+        <div class="sidebar-group">
+          <div style="display:flex; justify-content:space-between; align-items:baseline;">
+            <span class="sidebar-group-label" style="margin-bottom:0;">Price{% if kpi.price_date is defined and kpi.price_date %} <span style="font-weight:400; letter-spacing:0; text-transform:none; color:#999;">({{ kpi.price_date }})</span>{% endif %}</span>
+            <span class="sidebar-price-value">{% if kpi.price is defined and kpi.price is not none %}¥{{ '{:,.0f}'.format(kpi.price) }}{% else %}—{% endif %}</span>
+          </div>
+        </div>
+        {# ── MKT CAP ── #}
+        <div class="sidebar-group">
+          <div class="sidebar-metric">
+            <span class="sidebar-group-label" style="margin-bottom:0;">Mkt Cap</span>
+            <span class="sidebar-metric-value" style="font-size:14px;">{% if kpi.market_cap_display %}{{ kpi.market_cap_display }}{% else %}—{% endif %}</span>
+          </div>
+        </div>
+        {# ── VALUATION ── #}
+        <div class="sidebar-group">
+          <div class="sidebar-group-label">Valuation</div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">PBR</span>
+            <span class="sidebar-metric-value">{% if kpi.pbr is defined and kpi.pbr is not none %}{{ '{:.2f}'.format(kpi.pbr) }}<span class="sidebar-suffix">x</span>{% elif kpi.pb_value is defined and kpi.pb_value is not none %}{{ '{:.2f}'.format(kpi.pb_value) }}<span class="sidebar-suffix">x</span>{% else %}—{% endif %}</span>
+          </div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">PER</span>
+            <span class="sidebar-metric-value">{% if kpi.per is defined and kpi.per is not none %}{{ '{:.1f}'.format(kpi.per) }}<span class="sidebar-suffix">x</span>{% else %}—{% endif %}</span>
+          </div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">EV/EBITDA</span>
+            <span class="sidebar-metric-value">{% if kpi.ev_ebitda is defined and kpi.ev_ebitda is not none %}{{ '{:.1f}'.format(kpi.ev_ebitda) }}<span class="sidebar-suffix">x</span>{% else %}—{% endif %}</span>
+          </div>
+        </div>
+        {# ── RETURNS ── #}
+        <div class="sidebar-group">
+          <div class="sidebar-group-label">Returns</div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">ROE</span>
+            <span class="sidebar-metric-value {{ 'green' if kpi.roe is defined and kpi.roe is not none and kpi.roe > 0 else '' }}">{% if kpi.roe is defined and kpi.roe is not none %}{{ '{:.1f}'.format(kpi.roe*100) }}<span class="sidebar-suffix">%</span>{% else %}—{% endif %}</span>
+          </div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">Div Yield</span>
+            <span class="sidebar-metric-value">{% if kpi.div_yield is defined and kpi.div_yield is not none %}{{ '{:.2f}'.format(kpi.div_yield*100) }}<span class="sidebar-suffix">%</span>{% else %}—{% endif %}</span>
+          </div>
+        </div>
+        {# ── PER SHARE ── #}
+        <div class="sidebar-group">
+          <div class="sidebar-group-label">Per Share</div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">EPS</span>
+            <span class="sidebar-metric-value">{% if kpi.eps is defined and kpi.eps is not none %}¥{{ '{:,.1f}'.format(kpi.eps) }}{% else %}—{% endif %}</span>
+          </div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">DPS</span>
+            <span class="sidebar-metric-value">{% if kpi.dps is defined and kpi.dps is not none %}¥{{ '{:,.0f}'.format(kpi.dps) }}{% else %}—{% endif %}</span>
+          </div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">BPS</span>
+            <span class="sidebar-metric-value">{% if kpi.bps is defined and kpi.bps is not none %}¥{{ '{:,.0f}'.format(kpi.bps) }}{% else %}—{% endif %}</span>
+          </div>
+        </div>
+        {# ── STRUCTURE ── #}
+        <div class="sidebar-group">
+          <div class="sidebar-group-label">Structure</div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">Eq Ratio</span>
+            <span class="sidebar-metric-value">{% if kpi.equity_ratio is defined and kpi.equity_ratio is not none %}{{ '{:.1f}'.format(kpi.equity_ratio*100) }}<span class="sidebar-suffix">%</span>{% else %}—{% endif %}</span>
+          </div>
+          <div class="sidebar-metric">
+            <span class="sidebar-metric-label">52w Range</span>
+            <span class="sidebar-metric-value">{% if week_low and week_high %}¥{{ '{:,.0f}'.format(week_low) }}-{{ '{:,.0f}'.format(week_high) }}{% else %}—{% endif %}</span>
           </div>
         </div>
       </div>
     </div>
+    {% endif %}
 
     {% if dashboard.is_etf %}
     <div style="padding: 4px;">
@@ -802,9 +1109,9 @@
         <div class="data-header">ASSETS & CAPITAL STRUCTURE</div>
         {% if cs.asset_composition %}
         <table class="dense-table">
-          <tr><td>Total Assets</td><td class="mono">{{ '{:,.0f}'.format(cs.asset_composition.total_assets) if cs.asset_composition.total_assets is not none else '—' }}</td></tr>
-          <tr><td>Cash & Equiv</td><td class="mono">{{ '{:,.0f}'.format(cs.asset_composition.cash_equiv) if cs.asset_composition.cash_equiv is not none else '—' }}</td></tr>
-          <tr><td>Net Assets (Equity)</td><td class="mono">{{ '{:,.0f}'.format(cs.asset_composition.equity) if cs.asset_composition.equity is not none else '—' }}</td></tr>
+          <tr><td>Total Assets</td><td class="mono">{% if cs.asset_composition.total_assets is not none %}¥{{ cs.asset_composition.total_assets_d }}{% else %}—{% endif %}</td></tr>
+          <tr><td>Cash & Equiv</td><td class="mono">{% if cs.asset_composition.cash_equiv is not none %}¥{{ cs.asset_composition.cash_equiv_d }}{% else %}—{% endif %}</td></tr>
+          <tr><td>Net Assets (Equity)</td><td class="mono">{% if cs.asset_composition.equity is not none %}¥{{ cs.asset_composition.equity_d }}{% else %}—{% endif %}</td></tr>
           <tr><td>Equity Ratio</td><td class="mono">{{ '{:.1f}%'.format(cs.asset_composition.equity_ratio_pct) if cs.asset_composition.equity_ratio_pct is not none else '—' }}</td></tr>
         </table>
         {% else %}
@@ -827,15 +1134,15 @@
         <div class="data-header" style="margin-top:3px;">LEVERAGE</div>
         {% if cs.capital_structure %}
         <table class="dense-table">
-          <tr><td>Borrowings</td><td class="mono">{{ '{:,.0f}'.format(cs.capital_structure.borrowings) if cs.capital_structure.borrowings is not none else '—' }}</td></tr>
+          <tr><td>Borrowings</td><td class="mono">{% if cs.capital_structure.borrowings is not none %}¥{{ cs.capital_structure.borrowings_d }}{% else %}—{% endif %}</td></tr>
           <tr>
             <td>Net Debt</td>
             <td class="mono">
               {% if cs.capital_structure.net_debt is not none %}
                 {% if cs.capital_structure.is_net_cash %}
-                  <span class="net-cash-badge">Net Cash ¥{{ '{:,.0f}'.format(cs.capital_structure.net_debt|abs) }}</span>
+                  <span class="net-cash-badge">Net Cash ¥{{ cs.capital_structure.net_debt_abs_d }}</span>
                 {% else %}
-                  <span class="net-debt-badge">{{ '{:,.0f}'.format(cs.capital_structure.net_debt) }}</span>
+                  <span class="net-debt-badge">¥{{ cs.capital_structure.net_debt_d }}</span>
                 {% endif %}
               {% else %}—{% endif %}
             </td>

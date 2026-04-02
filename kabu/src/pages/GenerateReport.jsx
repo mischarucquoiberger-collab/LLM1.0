@@ -7,7 +7,7 @@ import {
   PanelLeftClose, PanelLeftOpen, BookOpen, FileText,
 } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { startReport, getStatus, buildDownloadUrl, buildViewUrl, subscribeToStream } from "@/api/backend";
+import { startReport, getStatus, buildDownloadUrl, buildViewUrl } from "@/api/backend";
 import SourcesModal from "@/components/report/SourcesModal";
 
 /* ── Pipeline ─────────────────────────────────────────────── */
@@ -24,26 +24,10 @@ const PIPELINE = [
   { key: "Complete",      icon: Check,     label: "Complete" },
 ];
 
-const STAGE_BASELINES = {
-  fast: { Starting: 2, "Company Info": 4, "Data Fetch": 20, Extraction: 12, Analysis: 15, Valuation: 18, Peers: 12, Drafting: 90, Rendering: 16, Complete: 0 },
-  full: { Starting: 2, "Company Info": 5, "Data Fetch": 25, Extraction: 15, Analysis: 18, Valuation: 22, Peers: 15, Drafting: 110, Rendering: 20, Complete: 0 },
-};
-
-const STAGE_ENDS = { Starting: 5, "Company Info": 10, "Data Fetch": 25, Extraction: 35, Analysis: 45, Valuation: 55, Peers: 60, Drafting: 90, Rendering: 100, Complete: 100 };
-
 const fmtTime = (s) => {
   if (s == null || Number.isNaN(s)) return "--:--";
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 };
-
-// Key history by mode so fast/full runs don't pollute each other.
-// Clean up stale legacy key from old code to prevent inflated ETAs.
-try { localStorage.removeItem("eta_stage_history"); } catch {}
-const readStageHistory = (m) => { try { return JSON.parse(localStorage.getItem(`eta_stage_history_${m || "full"}`) || "{}"); } catch { return {}; } };
-const writeStageHistory = (h, m) => { try { localStorage.setItem(`eta_stage_history_${m || "full"}`, JSON.stringify(h)); } catch {} };
-
-// Hard maximum: ETA can never exceed this many seconds (5 minutes)
-const ETA_HARD_MAX = 300;
 
 /* ── Status messages per stage ────────────────────────────── */
 const STAGE_MESSAGES = {
@@ -83,9 +67,6 @@ export default function GenerateReport() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [stageMsg, setStageMsg] = useState("");
   const stageMsgIdx = useRef(0);
-
-  // Timing refs
-  const stageStateRef = useRef({ current: null, startTime: null, startProgress: null, completed: {} });
 
   // Countdown timer refs
   const countdownRef = useRef(null);
@@ -128,85 +109,15 @@ export default function GenerateReport() {
   const downloadPdf = buildDownloadUrl(status?.pdf_file);
   const viewHtml = buildViewUrl(status?.html_file);
 
-  /* ── ETA: Client-side countdown timer with server correction ── */
+  /* ── ETA: Smooth countdown driven by backend prediction ── */
 
-  // Fallback ETA from stage baselines with pace-aware tracking
-  const fallbackEta = useMemo(() => {
-    const mk = mode === "fast" ? "fast" : "full";
-    const baseline = { ...(STAGE_BASELINES[mk] || STAGE_BASELINES.full) };
-    const hist = readStageHistory(mk);
-    const expectedDuration = (stage) => {
-      const durations = hist[stage];
-      if (Array.isArray(durations) && durations.length >= 2) {
-        const sorted = [...durations].sort((a, b) => a - b);
-        const mid = Math.floor(sorted.length / 2);
-        const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-        return 0.7 * median + 0.3 * (baseline[stage] || 15);
-      }
-      return baseline[stage] || 15;
-    };
-    const curIdx = PIPELINE.findIndex((p) => p.key === step);
-    if (curIdx < 0) return null;
-    const st = stageStateRef.current;
-    // Only use API-bound stages for pace — Starting/Company Info are always fast
-    const paceRelevant = new Set(["Data Fetch","Extraction","Analysis","Valuation","Peers","Drafting","Rendering"]);
-    const ratios = [];
-    Object.entries(st.completed || {}).forEach(([stage, actual]) => {
-      if (!paceRelevant.has(stage)) return;
-      const exp = expectedDuration(stage);
-      if (actual > 1 && exp > 1) ratios.push(actual / exp);
-    });
-    let pace = 1.0;
-    if (ratios.length > 0) {
-      ratios.sort((a, b) => a - b);
-      const mid = Math.floor(ratios.length / 2);
-      pace = ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2;
-      pace = Math.max(0.3, Math.min(pace, 3.0));
-    }
-    const expCur = expectedDuration(step) * pace;
-    const stageElapsed = st.startTime ? (Date.now() - st.startTime) / 1000 : 0;
-    let remCur;
-    if (stageElapsed >= expCur) {
-      remCur = Math.max(stageElapsed * 0.3, 3.0);
-    } else {
-      remCur = expCur - stageElapsed;
-    }
-    const remFuture = PIPELINE.slice(curIdx + 1).reduce(
-      (s, p) => s + (p.key !== "Complete" ? expectedDuration(p.key) * pace : 0), 0
-    );
-    const stageEta = remCur + remFuture;
-
-    // Elapsed-based crosscheck: use weighted stage position (not raw progress %)
-    // because early stages inflate progress but are much faster than later stages
-    let raw = stageEta;
-    if (elapsed != null && elapsed > 8 && curIdx >= 2) {
-      // Compute weighted fraction done from baselines
-      const totalBaseline = Object.values(baseline).reduce((a, b) => a + b, 0);
-      let completedBaseline = 0;
-      for (let i = 0; i < curIdx; i++) completedBaseline += (baseline[PIPELINE[i].key] || 0);
-      // Add partial current stage
-      const curBase = baseline[step] || 10;
-      const stElapsed = st.startTime ? (Date.now() - st.startTime) / 1000 : 0;
-      completedBaseline += curBase * Math.min(stElapsed / Math.max(curBase * pace, 1), 0.95);
-      const weightDone = Math.max(0.02, Math.min(completedBaseline / totalBaseline, 0.99));
-      const elapsedEta = (elapsed / weightDone) * (1 - weightDone);
-      // Only blend after Data Fetch (curIdx >= 3) — earlier stages are too noisy
-      const nRelevant = Object.keys(st.completed || {}).filter(s => !["Starting", "Company Info"].includes(s)).length;
-      if (nRelevant >= 1) {
-        const elapsedWeight = Math.min(0.6, nRelevant * 0.2);
-        raw = (1 - elapsedWeight) * stageEta + elapsedWeight * elapsedEta;
-      }
-    }
-    return Math.max(2, Math.min(raw, ETA_HARD_MAX));
-  }, [pct, step, mode, elapsed]);
-
-  // Sync server ETA target — always cap at hard max
+  // Sync server ETA into ref (backend is single source of truth)
   useEffect(() => {
-    const serverVal = status?.eta_seconds ?? fallbackEta;
-    if (serverVal != null) serverEtaRef.current = Math.min(serverVal, ETA_HARD_MAX);
-  }, [status?.eta_seconds, fallbackEta]);
+    const serverVal = status?.eta_seconds;
+    if (serverVal != null) serverEtaRef.current = Math.min(serverVal, 300);
+  }, [status?.eta_seconds]);
 
-  // 1-second countdown interval
+  // Smooth 1-second countdown that tracks server ETA without jarring resets
   useEffect(() => {
     if (!isRunning) {
       countdownRef.current = null;
@@ -216,26 +127,40 @@ export default function GenerateReport() {
     const iv = setInterval(() => {
       const server = serverEtaRef.current;
       let current = countdownRef.current;
+
+      // First tick — initialize from server
       if (current === null) {
         if (server != null) { countdownRef.current = server; setDisplayEta(Math.round(server)); }
         return;
       }
+
+      // No server data yet — just count down
       if (server === null) {
         current = Math.max(0, current - 1);
         countdownRef.current = current;
         setDisplayEta(Math.round(current));
         return;
       }
+
+      // Adaptive tick rate: steer toward server value smoothly
       const delta = server - current;
       let tickAmount;
       if (delta < -20)     tickAmount = 4.0;   // way ahead — drop fast
       else if (delta < -10) tickAmount = 3.0;
       else if (delta < -4) tickAmount = 2.0;
-      else if (delta > 10) tickAmount = 0.2;   // behind — slow down but keep moving
+      else if (delta > 10) tickAmount = 0.2;   // behind — slow almost to a halt
       else if (delta > 4)  tickAmount = 0.5;
-      else                 tickAmount = 1.0;
+      else                 tickAmount = 1.0;   // on track
+
       current = Math.max(0, current - tickAmount);
-      if (current <= 0 && server > 2) current = server;
+
+      // Asymptotic floor: never hit 0 while server says work remains.
+      // Instead of resetting from 0 → server (jarring), hold at a low value
+      // and let the natural countdown from server corrections take over.
+      if (current < 2 && server > 3) {
+        current = Math.max(current, 2);
+      }
+
       countdownRef.current = current;
       setDisplayEta(Math.round(current));
     }, 1000);
@@ -263,6 +188,8 @@ export default function GenerateReport() {
     setIsStarting(true);
     setError(null);
     setStatus(null);
+    countdownRef.current = null;
+    serverEtaRef.current = null;
     try {
       const res = await startReport({ stock_code: ticker, company_name: companyName, mode });
       const id = res?.job_id;
@@ -291,10 +218,6 @@ export default function GenerateReport() {
         setStatus(d);
         setError(null);
         setCompanyName((p) => p || d.company_name || "");
-        const now = Date.now();
-        const st = stageStateRef.current;
-        if (st.current && d.step !== st.current) st.completed[st.current] = (now - (st.startTime || now)) / 1000;
-        if (d.step !== st.current) { st.current = d.step; st.startTime = now; st.startProgress = d.progress; }
         if (d.status && ["complete", "warning", "error"].includes(d.status)) {
           try {
             const h = JSON.parse(localStorage.getItem("reports_history") || "[]");
@@ -303,30 +226,18 @@ export default function GenerateReport() {
               localStorage.setItem("reports_history", JSON.stringify(h.slice(0, 50)));
             }
           } catch {}
-          try {
-            const hist = readStageHistory(mode);
-            Object.entries(st.completed || {}).forEach(([stage, secs]) => { if (!hist[stage]) hist[stage] = []; hist[stage].push(Math.round(secs)); if (hist[stage].length > 12) hist[stage] = hist[stage].slice(-12); });
-            writeStageHistory(hist, mode);
-          } catch {}
           return;
         }
         timer = setTimeout(poll, 1200);
       } catch (err) {
         if (dead) return;
-        if (err.status === 404 && ticker && !isStarting) { setJobId(null); startNewJob(); return; }
+        if (err.status === 404 && ticker && !isStarting) { setJobId(null); return; }
         setError(err.message || "Status fetch failed");
         timer = setTimeout(poll, 2500);
       }
     };
     poll();
     return () => { dead = true; if (timer) clearTimeout(timer); };
-  }, [jobId]);
-
-  /* ── SSE subscription ── */
-  useEffect(() => {
-    if (!jobId) return;
-    const es = subscribeToStream(jobId, { onDone: () => {}, onError: () => {} });
-    return () => es.close();
   }, [jobId]);
 
   /* ── Handlers ── */
@@ -342,7 +253,7 @@ export default function GenerateReport() {
     window.location.href = `mailto:?subject=${encodeURIComponent(`Research report: ${companyName || ticker}`)}&body=${encodeURIComponent(`Report link:\n${link}`)}`;
   };
   const handleAskAI = () => {
-    if (viewHtml) navigate(`/Viewer?${new URLSearchParams({ url: viewHtml, title: companyName || ticker, jobId: jobId || "" })}`, { state: { openTab: "tools" } });
+    if (viewHtml) navigate(`/Viewer?${new URLSearchParams({ url: viewHtml, title: companyName || ticker, jobId: jobId || "" })}`, { state: { openTab: "ai" } });
   };
 
   /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

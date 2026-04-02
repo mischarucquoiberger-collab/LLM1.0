@@ -1,15 +1,17 @@
-"""ETA prediction v5 — adaptive pace with elapsed crosscheck.
+"""ETA prediction v6 — total-duration-centric with progress-to-time mapping.
 
-Two-signal approach for accurate ETA:
-1. Stage-based: uses baseline durations scaled by observed pace factor
-2. Elapsed-based: uses total_elapsed / progress_fraction as a crosscheck
+With parallel pipeline execution, individual stage durations are unreliable
+(a stage may take 0.1s or 180s depending on what runs in parallel).
 
-Blends both signals — early on trusts stage baselines more, later trusts
-elapsed extrapolation more as it becomes statistically reliable.
+Instead, this uses two primary signals:
+1. Historical total run duration — median of past runs by mode
+2. Elapsed extrapolation — using a progress-to-time mapping that correctly
+   accounts for Drafting being the bulk of the work
 
-Stages (aligned with backend progress calls):
-  Starting → Company Info → Data Fetch → Extraction → Analysis
-  → Valuation → Peers → Drafting → Rendering → Complete
+The progress-to-time map converts reported progress % (which is stage-based)
+into estimated time fraction (what % of total time has passed).  This is the
+key to accurate ETA: at 70% progress, we know we're only ~50% done time-wise
+because Drafting (60-90% progress) takes most of the remaining time.
 """
 
 from __future__ import annotations
@@ -26,67 +28,47 @@ from app.config import settings
 # ── Stage definitions (must match backend progress calls) ──
 
 STAGE_ORDER = [
-    "Starting",
-    "Company Info",
-    "Data Fetch",
-    "Extraction",
-    "Analysis",
-    "Valuation",
-    "Peers",
-    "Drafting",
-    "Rendering",
-    "Complete",
+    "Starting", "Company Info", "Data Fetch", "Extraction",
+    "Analysis", "Valuation", "Peers", "Drafting", "Rendering", "Complete",
 ]
 
-# Baseline durations in seconds — calibrated from observed single runs (2026-03).
-# Total ~250s (~4:10) — realistic for a typical fast-mode report.
-STAGE_BASELINES = {
-    "Starting":       2,
-    "Company Info":    5,
-    "Data Fetch":     25,
-    "Extraction":     15,
-    "Analysis":       18,
-    "Valuation":      22,
-    "Peers":          15,
-    "Drafting":      110,
-    "Rendering":      20,
-    "Complete":        0,
-}
-
-TOTAL_BASELINE = sum(STAGE_BASELINES.values())  # ~232s
-
-# Stages that are meaningful for pace estimation.
-# Starting & Company Info are always fast (CPU-bound) and shouldn't influence
-# pace prediction for API-bound stages like Drafting.
-_PACE_RELEVANT_STAGES = {"Data Fetch", "Extraction", "Analysis", "Valuation", "Peers", "Drafting", "Rendering"}
-
-# Progress % at end of each stage — proportional to baseline duration
+# Progress % at end of each stage — for progress bar interpolation.
 STAGE_ENDS = {
-    "Starting":       5,
-    "Company Info":   10,
-    "Data Fetch":     25,
-    "Extraction":     35,
-    "Analysis":       45,
-    "Valuation":      55,
-    "Peers":          60,
-    "Drafting":       90,
-    "Rendering":     100,
-    "Complete":      100,
+    "Starting": 5, "Company Info": 10, "Data Fetch": 25, "Extraction": 35,
+    "Analysis": 45, "Valuation": 55, "Peers": 60, "Drafting": 90,
+    "Rendering": 100, "Complete": 100,
 }
 
-# Weight of each stage for pace calculation — heavier stages
-# are more informative about overall run speed.
-_STAGE_WEIGHT = {s: max(STAGE_BASELINES.get(s, 5), 3) for s in STAGE_ORDER}
+# ── Progress-to-time mapping ──
+# Maps (progress %, time fraction) — calibrated for parallel pipeline.
+# Key insight: stages 25-60% (Extraction/Analysis/Valuation/Peers) often
+# complete in seconds due to parallelism, while Drafting (60-90%) takes
+# the majority of total time.
+_PROGRESS_TIME = [
+    (0,   0.00),
+    (5,   0.02),   # Starting — instant
+    (10,  0.05),   # Company Info — fast
+    (25,  0.18),   # Data Fetch — moderate
+    (35,  0.22),   # Extraction — often overlaps
+    (45,  0.25),   # Analysis — often overlaps
+    (55,  0.55),   # Valuation — significant J-Quants work
+    (60,  0.70),   # Peers — more J-Quants work
+    (90,  0.90),   # Drafting — fast with cache, slow without
+    (100, 1.00),   # Rendering + done
+]
+
+# Baseline total run durations (seconds) when no history exists.
+TOTAL_BASELINE = {"fast": 50, "full": 90}
 
 LOCK = threading.Lock()
 
 # ── Per-job ETA state ──
 _JOB_ETA_STATE: Dict[str, dict] = {}
 
-# ── Historical stage durations (persisted across server restarts) ──
+# ── Historical data (persisted across server restarts) ──
 _HISTORY_PATH = Path(settings.output_dir) / "eta_history.json"
-_HISTORY: Dict[str, List[float]] = {}
-_MAX_HISTORY = 10  # keep last N durations per stage
+_HISTORY: Dict[str, list] = {}
+_MAX_HISTORY = 15
 
 
 def _load_history():
@@ -101,7 +83,7 @@ def _load_history():
 def _save_history():
     try:
         _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _HISTORY_PATH.write_text(json.dumps(_HISTORY))
+        _HISTORY_PATH.write_text(json.dumps(_HISTORY, indent=2))
     except Exception:
         pass
 
@@ -109,139 +91,79 @@ def _save_history():
 _load_history()
 
 
-def _expected_duration(stage: str) -> float:
-    """Best estimate for a stage's duration: historical median or baseline."""
-    hist = _HISTORY.get(stage)
-    if hist and len(hist) >= 2:
-        s = sorted(hist)
-        mid = len(s) // 2
-        median = s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
-        # Blend: 70% historical median + 30% baseline (prevents runaway drift)
-        return 0.7 * median + 0.3 * STAGE_BASELINES.get(stage, 10)
-    return float(STAGE_BASELINES.get(stage, 10))
-
-
-def _compute_pace_factor(stage_history: list) -> float:
-    """Compute how fast this run is relative to expected durations.
-
-    Returns a multiplier: 1.0 = on pace, 1.5 = 50% slower, 0.5 = 50% faster.
-    Only uses API-bound stages (Data Fetch+) — Starting/Company Info are always
-    fast and would bias the estimate low.
-    """
-    if not stage_history:
-        return 1.0
-
-    weighted_ratios = []
-    for entry in stage_history:
-        stage = entry.get("stage", "")
-        # Skip CPU-bound stages that don't predict API-bound stage speed
-        if stage not in _PACE_RELEVANT_STAGES:
-            continue
-        actual = float(entry.get("duration", 0))
-        expected = _expected_duration(stage)
-        if actual > 0.5 and expected > 0.5:
-            weight = _STAGE_WEIGHT.get(stage, 3)
-            ratio = actual / expected
-            weighted_ratios.append((ratio, weight))
-
-    if not weighted_ratios:
-        return 1.0
-
-    # Weighted median
-    weighted_ratios.sort(key=lambda x: x[0])
-    total_weight = sum(w for _, w in weighted_ratios)
-    cumulative = 0
-    for ratio, weight in weighted_ratios:
-        cumulative += weight
-        if cumulative >= total_weight / 2:
-            return max(0.3, min(ratio, 3.0))
-
+def _progress_to_time_frac(pct: float) -> float:
+    """Convert progress % to estimated time fraction (piecewise linear)."""
+    pct = max(0.0, min(pct, 100.0))
+    for i in range(len(_PROGRESS_TIME) - 1):
+        p0, t0 = _PROGRESS_TIME[i]
+        p1, t1 = _PROGRESS_TIME[i + 1]
+        if p0 <= pct <= p1:
+            if p1 == p0:
+                return t0
+            return t0 + (pct - p0) / (p1 - p0) * (t1 - t0)
     return 1.0
 
 
+def _get_expected_total(mode: str = "full") -> float:
+    """Best estimate for total run duration: historical median or baseline."""
+    key = f"_total_{mode}"
+    hist = _HISTORY.get(key)
+    if hist and len(hist) >= 2:
+        s = sorted(hist)
+        mid = len(s) // 2
+        return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+    return float(TOTAL_BASELINE.get(mode, 200))
+
+
 def _raw_eta(job) -> float | None:
-    """Compute raw ETA (remaining seconds) using dual-signal approach."""
+    """Compute raw ETA using total-duration + elapsed extrapolation."""
     step = getattr(job, "step", None)
     if not step or step == "Complete":
         return 0.0
 
     try:
-        stage_history = getattr(job, "stage_history", []) or []
+        mode = getattr(job, "mode", "full") or "full"
+        expected_total = _get_expected_total(mode)
 
-        # 1. Pace factor from completed stages
-        pace = _compute_pace_factor(stage_history)
-
-        # 2. Elapsed time in current stage
-        elapsed_in_stage = 0.0
-        if job.stage_started_at:
-            try:
-                start_ts = dt.datetime.fromisoformat(job.stage_started_at)
-                elapsed_in_stage = max((dt.datetime.now() - start_ts).total_seconds(), 0)
-            except Exception:
-                pass
-
-        # 3. Expected remaining for current stage
-        expected_current = _expected_duration(step) * pace
-        if elapsed_in_stage >= expected_current:
-            remaining_current = max(elapsed_in_stage * 0.2, 2.0)
-        else:
-            remaining_current = expected_current - elapsed_in_stage
-
-        # 4. Sum of future stages (scaled by pace)
-        if step in STAGE_ORDER:
-            idx = STAGE_ORDER.index(step)
-            future_stages = STAGE_ORDER[idx + 1:]
-        else:
-            future_stages = []
-
-        future_sum = sum(_expected_duration(s) * pace for s in future_stages
-                         if s != "Complete")
-
-        stage_eta = remaining_current + future_sum
-
-        # 5. Elapsed-based crosscheck using weighted stage position
+        # Total elapsed time since job started
         total_elapsed = 0.0
         started = getattr(job, "started_at", None)
         if started:
             try:
                 total_elapsed = max(
-                    (dt.datetime.now() - dt.datetime.fromisoformat(started)).total_seconds(),
-                    0,
+                    (dt.datetime.now() - dt.datetime.fromisoformat(started)).total_seconds(), 0
                 )
             except Exception:
                 pass
 
-        # Compute weighted fraction done (using baseline weights, not progress %)
-        # This is more accurate than progress % because it accounts for heavy stages
-        completed_baseline = sum(
-            STAGE_BASELINES.get(e.get("stage", ""), 0) for e in stage_history
-        )
-        # Add partial current stage
-        current_baseline = STAGE_BASELINES.get(step, 10)
-        if current_baseline > 0 and elapsed_in_stage > 0:
-            current_frac = min(elapsed_in_stage / (current_baseline * max(pace, 0.3)), 0.95)
-            completed_baseline += current_baseline * current_frac
+        # Current progress — use stage position as floor
+        progress = getattr(job, "progress", 0) or 0
+        if step in STAGE_ORDER:
+            idx = STAGE_ORDER.index(step)
+            prev = STAGE_ORDER[idx - 1] if idx > 0 else None
+            floor_pct = STAGE_ENDS.get(prev, 0) if prev else 0
+            progress = max(progress, floor_pct)
 
-        weight_done = completed_baseline / max(TOTAL_BASELINE, 1)
-        weight_done = max(0.01, min(weight_done, 0.99))
+        # Convert progress to time fraction (the key correction)
+        time_frac = _progress_to_time_frac(progress)
+        time_frac = max(0.01, min(time_frac, 0.99))
 
+        # Signal 1: expected_total minus elapsed
+        hist_eta = max(expected_total - total_elapsed, 0)
+
+        # Signal 2: elapsed extrapolation using time fraction
         elapsed_eta = None
-        if total_elapsed > 8 and weight_done > 0.05:
-            elapsed_eta = total_elapsed / weight_done * (1 - weight_done)
+        if total_elapsed > 5 and time_frac > 0.03:
+            elapsed_eta = total_elapsed / time_frac * (1 - time_frac)
 
-        # 6. Blend: only use elapsed crosscheck after enough progress
-        # At early stages, trust baselines; after Extraction+, blend more
-        n_relevant_completed = sum(
-            1 for e in stage_history if e.get("stage") in _PACE_RELEVANT_STAGES
-        )
-        raw = stage_eta
-        if elapsed_eta is not None and n_relevant_completed >= 1:
-            # After 1+ relevant stage, start blending
-            elapsed_weight = min(0.7, n_relevant_completed * 0.2)
-            raw = (1 - elapsed_weight) * stage_eta + elapsed_weight * elapsed_eta
+        # Blend: trust elapsed extrapolation more as we progress further
+        if elapsed_eta is not None:
+            w = min(0.85, time_frac * 1.6)
+            raw = (1 - w) * hist_eta + w * elapsed_eta
+        else:
+            raw = hist_eta
 
-        # Hard cap: ETA should never exceed 5 minutes for a single report
-        return max(2.0, min(raw, 300.0))
+        return max(3.0, min(raw, 300.0))
 
     except Exception:
         return None
@@ -250,9 +172,8 @@ def _raw_eta(job) -> float | None:
 def predict_eta(job) -> float | None:
     """ETA with smooth monotonic countdown.
 
-    Uses per-job state so the displayed ETA ticks down steadily.
-    Server corrections are absorbed gradually — never jumps up wildly,
-    but corrections downward happen quickly.
+    Per-job state ensures the displayed ETA ticks down steadily.
+    Downward corrections are fast; upward corrections are limited.
     """
     raw = _raw_eta(job)
     if raw is None:
@@ -275,20 +196,20 @@ def predict_eta(job) -> float | None:
         prev_ts = state["ts"]
         elapsed_since = now - prev_ts
 
-        # Where the countdown should be if ticking at 1s/s
+        # Where countdown should be if ticking at 1s/s
         expected = max(prev_eta - elapsed_since, 0)
 
         stage_changed = job.step != state["step"]
 
         if raw <= expected:
-            # Ahead of schedule — drop fast (users love seeing ETA shrink)
+            # Ahead of schedule — drop quickly (users love seeing ETA shrink)
             smoothed = 0.3 * expected + 0.7 * raw
         elif stage_changed:
-            # Stage transition — allow moderate correction (up to 10s increase)
-            smoothed = expected + min(raw - expected, 10.0)
+            # Stage transition — allow moderate upward correction
+            smoothed = expected + min(raw - expected, 8.0)
         else:
-            # Behind schedule within same stage — limit increase to 3s
-            smoothed = expected + min(raw - expected, 3.0)
+            # Behind within same stage — tiny increase only
+            smoothed = expected + min(raw - expected, 2.0)
 
         smoothed = max(2.0, min(smoothed, 300.0))
 
@@ -302,8 +223,8 @@ def predict_eta(job) -> float | None:
 def interpolate_progress(job) -> int:
     """Smooth progress interpolation within the current stage.
 
-    Uses elapsed time vs expected duration with an ease-out curve
-    so the progress bar always appears to be moving.
+    Uses total elapsed vs expected total to estimate how far through
+    the current stage we are, producing a smooth-moving progress bar.
     """
     base_progress = getattr(job, "progress", 0) or 0
     step = getattr(job, "step", None)
@@ -313,28 +234,45 @@ def interpolate_progress(job) -> int:
 
     try:
         idx = STAGE_ORDER.index(step)
-        prev_stage = STAGE_ORDER[idx - 1] if idx > 0 else None
-        start_pct = STAGE_ENDS.get(prev_stage, 0) if prev_stage else 0
+        prev = STAGE_ORDER[idx - 1] if idx > 0 else None
+        start_pct = STAGE_ENDS.get(prev, 0) if prev else 0
         end_pct = STAGE_ENDS.get(step, start_pct + 5)
 
         if not job.stage_started_at:
             return max(base_progress, start_pct)
 
-        # Use pace-adjusted expected duration for this stage
-        stage_history = getattr(job, "stage_history", []) or []
-        pace = _compute_pace_factor(stage_history)
-        expected = _expected_duration(step) * pace
+        # Total elapsed from job start
+        mode = getattr(job, "mode", "full") or "full"
+        expected_total = _get_expected_total(mode)
 
+        total_elapsed = 0.0
+        started = getattr(job, "started_at", None)
+        if started:
+            try:
+                total_elapsed = max(
+                    (dt.datetime.now() - dt.datetime.fromisoformat(started)).total_seconds(), 0
+                )
+            except Exception:
+                pass
+
+        # Expected time window for this stage (from progress-to-time map)
+        t_start = _progress_to_time_frac(start_pct)
+        t_end = _progress_to_time_frac(end_pct)
+        expected_stage_secs = max((t_end - t_start) * expected_total, 1.0)
+
+        # Elapsed within this stage
         start_ts = dt.datetime.fromisoformat(job.stage_started_at)
-        elapsed = max((dt.datetime.now() - start_ts).total_seconds(), 0)
+        stage_elapsed = max((dt.datetime.now() - start_ts).total_seconds(), 0)
 
-        if elapsed >= expected and expected > 0:
-            # Overrun: creep toward 95% asymptotically
-            overshoot = elapsed / expected
+        if stage_elapsed < 0.3:
+            frac = 0.02
+        elif stage_elapsed >= expected_stage_secs:
+            # Overrun: asymptotically approach 95%
+            overshoot = stage_elapsed / expected_stage_secs
             frac = 0.90 + 0.05 * (1 - 1.0 / max(overshoot, 1.0))
             frac = min(frac, 0.95)
         else:
-            frac = min(elapsed / max(expected, 1.0), 0.90)
+            frac = min(stage_elapsed / expected_stage_secs, 0.90)
 
         # Ease-out: fast start, decelerates near end
         eased = 1 - (1 - frac) ** 2.5
@@ -353,15 +291,34 @@ def cleanup_job(job_id: str):
 
 
 def record_job(job):
-    """Record completed stage durations for future ETA predictions."""
+    """Record completed job data for future ETA predictions."""
     job_id = getattr(job, "job_id", None)
     if job_id:
         cleanup_job(job_id)
 
-    stage_history = getattr(job, "stage_history", []) or []
-    if not stage_history:
-        return
+    # Record total run duration (primary signal for future ETAs)
+    started = getattr(job, "started_at", None)
+    finished = getattr(job, "finished_at", None)
+    mode = getattr(job, "mode", "full") or "full"
 
+    if started and finished:
+        try:
+            total_duration = (
+                dt.datetime.fromisoformat(finished) - dt.datetime.fromisoformat(started)
+            ).total_seconds()
+            if total_duration > 5:
+                key = f"_total_{mode}"
+                with LOCK:
+                    if key not in _HISTORY:
+                        _HISTORY[key] = []
+                    _HISTORY[key].append(round(total_duration, 1))
+                    if len(_HISTORY[key]) > _MAX_HISTORY:
+                        _HISTORY[key] = _HISTORY[key][-_MAX_HISTORY:]
+        except Exception:
+            pass
+
+    # Also record individual stage durations (backward compat + diagnostics)
+    stage_history = getattr(job, "stage_history", []) or []
     with LOCK:
         for entry in stage_history:
             stage = entry.get("stage")
@@ -371,7 +328,6 @@ def record_job(job):
             if stage not in _HISTORY:
                 _HISTORY[stage] = []
             _HISTORY[stage].append(round(duration, 1))
-            # Keep only recent history
             if len(_HISTORY[stage]) > _MAX_HISTORY:
                 _HISTORY[stage] = _HISTORY[stage][-_MAX_HISTORY:]
         _save_history()

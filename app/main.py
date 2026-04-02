@@ -29,6 +29,19 @@ async def _warm_edinet_index():
     from app.services.chat import warm_060_index
     warm_060_index()
 
+# Pre-train ML valuation model in background — only if cache already
+# exists (refresh before expiry).  Avoid cold-start training on startup
+# because the bulk J-Quants fetches compete with per-report peer lookups
+# for rate-limit budget, slowing down actual reports.
+@app.on_event("startup")
+async def _warm_valuation_model():
+    from app.services.valuation import ValuationEngine
+    eng = ValuationEngine()
+    meta, _ = eng._load_cached_model()
+    if meta:
+        # Model exists but might expire soon — refresh in background
+        eng.train_model_background()
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -352,6 +365,13 @@ async def status(job_id: str):
         data["interpolated_progress"] = eta.interpolate_progress(job)
     except Exception:
         pass
+    # Build completed dict {stage: seconds} for frontend ETA learning
+    if data.get("stage_history"):
+        data["completed"] = {
+            s["stage"]: round(s["duration"], 1)
+            for s in data["stage_history"]
+            if "stage" in s and "duration" in s
+        }
     return JSONResponse(data)
 
 
@@ -511,24 +531,44 @@ async def api_quote(code: str):
 # ── Price history endpoint (for chart sparklines) ────────
 
 @app.get("/api/price-history/{code}")
-async def api_price_history(code: str, days: int = 90):
-    """Return historical daily closing prices for chart rendering."""
+async def api_price_history(code: str, days: int = 90, interval: str = "1d"):
+    """Return price history for chart rendering.
+
+    For short ranges (1D, 5D) pass interval=5m or interval=15m to get
+    intraday data from Yahoo Finance.  Longer ranges use daily closes
+    from J-Quants / Stooq as before.
+    """
     from app.services.jquants import JQuantsClient
-    import logging
+    import logging, datetime as _dt
     logger = logging.getLogger(__name__)
 
     def _fetch():
+        # Try Yahoo Finance first (works for all intervals and has deeper history)
+        yahoo_data = _fetch_yahoo_chart(code, days, interval, logger)
+        if yahoo_data:
+            # Yahoo's coarse range buckets (e.g. "6mo" for 92-day YTD) may
+            # return more data than the requested window.  Trim daily data
+            # to only include dates within the requested calendar-day span.
+            if interval == "1d" and days > 0:
+                cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+                yahoo_data = [p for p in yahoo_data if (p.get("date") or "") >= cutoff]
+            return yahoo_data
+
+        # Fallback to J-Quants / Stooq for daily data
+        if interval != "1d":
+            return []
         client = JQuantsClient()
         quotes = []
+        from_date = (_dt.date.today() - _dt.timedelta(days=min(days + 30, 2000))).isoformat()
         try:
-            data = client.get_prices(code)
+            data = client.get_prices(code, from_date=from_date)
             quotes = data.get("daily_quotes") or data.get("data") or []
         except Exception as e:
             logger.debug(f"J-Quants price fetch failed for {code}: {e}")
 
         if not quotes:
             try:
-                data = client.get_prices_fallback_csv(code)
+                data = client.get_prices_fallback_csv(code, from_date=from_date)
                 quotes = data.get("daily_quotes") or []
             except Exception as e:
                 logger.debug(f"Stooq fallback failed for {code}: {e}")
@@ -549,6 +589,71 @@ async def api_price_history(code: str, days: int = 90):
 
     result = await asyncio.to_thread(_fetch)
     return JSONResponse(result)
+
+
+def _fetch_yahoo_chart(code: str, days: int, interval: str, logger) -> list:
+    """Fetch price data from Yahoo Finance chart API (intraday or daily)."""
+    import datetime as _dt
+    from app.services.chat import _get_yahoo_client
+
+    symbol = f"{code.strip()}.T"
+    # Map days to Yahoo range strings
+    if days <= 1:
+        yf_range = "1d"
+    elif days <= 5:
+        yf_range = "5d"
+    elif days <= 30:
+        yf_range = "1mo"
+    elif days <= 90:
+        yf_range = "3mo"
+    elif days <= 180:
+        yf_range = "6mo"
+    elif days <= 365:
+        yf_range = "1y"
+    elif days <= 730:
+        yf_range = "2y"
+    else:
+        yf_range = "5y"
+
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        f"?interval={interval}&range={yf_range}"
+    )
+    try:
+        resp = _get_yahoo_client().get(url, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.debug(f"Yahoo chart failed for {code}: {e}")
+        return []
+
+    results = data.get("chart", {}).get("result", [])
+    if not results:
+        return []
+
+    timestamps = results[0].get("timestamp", [])
+    quotes = results[0].get("indicators", {}).get("quote", [{}])[0]
+    closes = quotes.get("close", [])
+    opens = quotes.get("open", [])
+    highs = quotes.get("high", [])
+    lows = quotes.get("low", [])
+
+    is_intraday = interval != "1d" and interval != "1wk" and interval != "1mo"
+
+    compact = []
+    for i, ts in enumerate(timestamps):
+        close = closes[i] if i < len(closes) else None
+        if close is None:
+            continue
+        t = _dt.datetime.fromtimestamp(ts)
+        date_str = t.strftime("%Y-%m-%d %H:%M") if is_intraday else t.strftime("%Y-%m-%d")
+        entry = {"date": date_str, "close": round(close, 1)}
+        if is_intraday:
+            entry["open"] = round(opens[i], 1) if i < len(opens) and opens[i] is not None else None
+            entry["high"] = round(highs[i], 1) if i < len(highs) and highs[i] is not None else None
+            entry["low"] = round(lows[i], 1) if i < len(lows) and lows[i] is not None else None
+        compact.append(entry)
+    return compact
 
 
 # ── Report text cache (avoids re-parsing HTML per question) ──

@@ -108,14 +108,16 @@ class JQuantsClient:
                     continue
             raise last_exc or httpx.RequestError("All host attempts failed")
 
-        def _try_with_rate_limit_retry(headers, max_retries=2):
+        def _try_with_rate_limit_retry(headers, max_retries=4):
             for attempt in range(max_retries):
                 try:
                     return try_hosts(headers)
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code == 429:
                         retry_after = exc.response.headers.get("Retry-After")
-                        wait = min(float(retry_after) if retry_after else 1.0, 2.0)
+                        wait = float(retry_after) if retry_after else (1.5 * (attempt + 1))
+                        wait = min(wait, 8.0)
+                        print(f"[JQUANTS] 429 rate limit, retry {attempt+1}/{max_retries} after {wait:.1f}s")
                         _time.sleep(wait)
                         continue
                     raise

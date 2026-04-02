@@ -1,7 +1,13 @@
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Mic, MicOff, Square, Gauge } from "lucide-react";
 import { streamChat } from "@/api/backend";
+import { Canvas, useFrame, extend } from "@react-three/fiber";
+import { Environment } from "@react-three/drei";
+import * as THREE from "three";
+import { MathUtils, Vector3, Color } from "three";
+
+extend({ IcosahedronGeometry: THREE.IcosahedronGeometry });
 
 /* ── Browser support ───────────────────────────────────── */
 const HAS_RECOGNITION =
@@ -32,8 +38,8 @@ const NOISE_FLOOR_SAMPLES = 30;
 const NOISE_FLOOR_EMA = 0.003;       /* exponential moving average weight for continuous adaptation */
 const SPEECH_OFFSET = 0.08;          /* volume above noise floor to count as "loud" */
 const MIN_SPEECH_MS = 350;           /* minimum speech duration before silence detection activates */
-const REDEMPTION_MS = 1200;          /* allow this much silence mid-sentence before ending turn */
-const FINAL_RESULT_SILENCE_MS = 600; /* after SpeechRecognition gives isFinal, wait only this long */
+const REDEMPTION_MS = 900;           /* allow this much silence mid-sentence before ending turn */
+const FINAL_RESULT_SILENCE_MS = 400; /* after SpeechRecognition gives isFinal, wait only this long */
 
 /* ── Barge-in ─────────────────────────────────────────────
    Primary: SpeechRecognition passive mode (requires real words).
@@ -152,7 +158,7 @@ const STATUS_POOL = {
   processing: ["Thinking\u2026", "Let me check\u2026", "One sec\u2026", "On it\u2026"],
 };
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-const POST_RESPONSE_PAUSE = 400; /* pause after bot finishes speaking before listening — prevents TTS tail pickup */
+const POST_RESPONSE_PAUSE = 200; /* pause after bot finishes speaking before listening — prevents TTS tail pickup */
 
 
 /* ══════════════════════════════════════════════════════════
@@ -474,7 +480,397 @@ const AUDIO_CUES = {
 };
 
 /* ══════════════════════════════════════════════════════════
-   DRAW PARTICLE SPHERE — Full visual pipeline
+   THREE.JS VOICE-REACTIVE BLOB ORB
+   ══════════════════════════════════════════════════════════ */
+const blobVertexShader = `
+uniform float u_intensity;
+uniform float u_time;
+varying vec2 vUv;
+varying float vDisplacement;
+vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x,289.0);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+vec3 fade(vec3 t){return t*t*t*(t*(t*6.0-15.0)+10.0);}
+float cnoise(vec3 P){
+  vec3 Pi0=floor(P);vec3 Pi1=Pi0+vec3(1.0);
+  Pi0=mod(Pi0,289.0);Pi1=mod(Pi1,289.0);
+  vec3 Pf0=fract(P);vec3 Pf1=Pf0-vec3(1.0);
+  vec4 ix=vec4(Pi0.x,Pi1.x,Pi0.x,Pi1.x);
+  vec4 iy=vec4(Pi0.yy,Pi1.yy);
+  vec4 iz0=Pi0.zzzz;vec4 iz1=Pi1.zzzz;
+  vec4 ixy=permute(permute(ix)+iy);
+  vec4 ixy0=permute(ixy+iz0);vec4 ixy1=permute(ixy+iz1);
+  vec4 gx0=ixy0/7.0;vec4 gy0=fract(floor(gx0)/7.0)-0.5;gx0=fract(gx0);
+  vec4 gz0=vec4(0.5)-abs(gx0)-abs(gy0);vec4 sz0=step(gz0,vec4(0.0));
+  gx0-=sz0*(step(0.0,gx0)-0.5);gy0-=sz0*(step(0.0,gy0)-0.5);
+  vec4 gx1=ixy1/7.0;vec4 gy1=fract(floor(gx1)/7.0)-0.5;gx1=fract(gx1);
+  vec4 gz1=vec4(0.5)-abs(gx1)-abs(gy1);vec4 sz1=step(gz1,vec4(0.0));
+  gx1-=sz1*(step(0.0,gx1)-0.5);gy1-=sz1*(step(0.0,gy1)-0.5);
+  vec3 g000=vec3(gx0.x,gy0.x,gz0.x);vec3 g100=vec3(gx0.y,gy0.y,gz0.y);
+  vec3 g010=vec3(gx0.z,gy0.z,gz0.z);vec3 g110=vec3(gx0.w,gy0.w,gz0.w);
+  vec3 g001=vec3(gx1.x,gy1.x,gz1.x);vec3 g101=vec3(gx1.y,gy1.y,gz1.y);
+  vec3 g011=vec3(gx1.z,gy1.z,gz1.z);vec3 g111=vec3(gx1.w,gy1.w,gz1.w);
+  vec4 norm0=taylorInvSqrt(vec4(dot(g000,g000),dot(g010,g010),dot(g100,g100),dot(g110,g110)));
+  g000*=norm0.x;g010*=norm0.y;g100*=norm0.z;g110*=norm0.w;
+  vec4 norm1=taylorInvSqrt(vec4(dot(g001,g001),dot(g011,g011),dot(g101,g101),dot(g111,g111)));
+  g001*=norm1.x;g011*=norm1.y;g101*=norm1.z;g111*=norm1.w;
+  float n000=dot(g000,Pf0);float n100=dot(g100,vec3(Pf1.x,Pf0.yz));
+  float n010=dot(g010,vec3(Pf0.x,Pf1.y,Pf0.z));float n110=dot(g110,vec3(Pf1.xy,Pf0.z));
+  float n001=dot(g001,vec3(Pf0.xy,Pf1.z));float n101=dot(g101,vec3(Pf1.x,Pf0.y,Pf1.z));
+  float n011=dot(g011,vec3(Pf0.x,Pf1.yz));float n111=dot(g111,Pf1);
+  vec3 fade_xyz=fade(Pf0);
+  vec4 n_z=mix(vec4(n000,n100,n010,n110),vec4(n001,n101,n011,n111),fade_xyz.z);
+  vec2 n_yz=mix(n_z.xy,n_z.zw,fade_xyz.y);
+  float n_xyz=mix(n_yz.x,n_yz.y,fade_xyz.x);
+  return 2.2*n_xyz;
+}
+void main(){
+  vUv=uv;
+  vDisplacement=cnoise(position+vec3(2.0*u_time));
+  vec3 newPosition=position+normal*(u_intensity*vDisplacement);
+  vec4 modelPosition=modelMatrix*vec4(newPosition,1.0);
+  vec4 viewPosition=viewMatrix*modelPosition;
+  vec4 projectedPosition=projectionMatrix*viewPosition;
+  gl_Position=projectedPosition;
+}
+`;
+const blobFragmentShader = `
+uniform float u_intensity;
+uniform float u_time;
+uniform vec3 u_color;
+uniform float u_spread;
+uniform vec3 u_spread_color;
+varying vec2 vUv;
+varying float vDisplacement;
+void main(){
+  float distort=2.0*vDisplacement*u_intensity*sin(vUv.y*10.0+u_time);
+  vec3 baseColor=mix(u_color,vec3(1.0,1.0,1.0),distort);
+
+  if(u_spread>0.001){
+    /* Virus-spreading blue effect:
+       Use perlin noise displacement as an organic threshold.
+       As u_spread goes 0→1, more noise-driven patches turn blue,
+       creating an organic infection-like spread across the surface. */
+    float noiseVal=clamp(vDisplacement*0.45+0.5,0.0,1.0);
+
+    /* Add UV-based variation for more interesting spread direction */
+    float uvBias=(1.0-vUv.y)*0.3+sin(vUv.x*6.28+vUv.y*4.0)*0.08;
+    float pattern=noiseVal*0.7+uvBias;
+
+    /* Threshold overshoots at 1.0 to ensure full coverage */
+    float threshold=u_spread*1.5;
+
+    /* Organic spread mask: 0=infected(blue), 1=original */
+    float mask=smoothstep(threshold-0.1,threshold+0.08,pattern);
+
+    /* Bright glowing edge at the spreading boundary */
+    float edge=smoothstep(threshold-0.2,threshold-0.03,pattern)
+              *(1.0-smoothstep(threshold-0.03,threshold+0.1,pattern));
+
+    /* Veiny tendrils at the edge — second noise layer */
+    float tendril=sin(pattern*25.0+u_time*2.0)*0.5+0.5;
+    edge*=0.6+tendril*0.4;
+
+    /* Blue spread color with distortion + bright edge glow */
+    vec3 blueBase=u_spread_color+vec3(0.0,0.0,distort*0.12);
+    vec3 edgeGlow=vec3(0.45,0.7,1.0);
+    vec3 spreadResult=mix(blueBase,edgeGlow,edge*0.8);
+
+    baseColor=mix(spreadResult,baseColor,mask);
+  }
+
+  gl_FragColor=vec4(baseColor,1.0);
+}
+`;
+
+/* State-dependent blob colors */
+const BLOB_COLORS = {
+  idle: "#2cb978",
+  listening: "#5aafff",
+  processing: "#af8cff",
+  speaking: "#28d7dc",
+};
+
+/* Blob base colors — all keep the same white distortion on top */
+const BLOB_BLACK = new Color(0x000000);
+const BLOB_BLUE  = new Color(0x1565c0);
+const BLOB_RED   = new Color(0xc62828);
+const _tmpColor  = new Color(); /* reusable for comparisons */
+
+/* Orb sizing — scale multiplier applied on top of all state-driven scale values.
+   Geometry radius is 2, FOV 15° at z=8. Projection factor ≈ 0.95*R per unit radius.
+   ORB_BASE 0.10 → ~19% of viewport at rest, expands to ~35% during loud listening. */
+const ORB_BASE = 0.10;
+
+/* Voice-reactive Three.js Blob — organic R3F blob with:
+   1. Reference perlin noise surface (blobby, organic, alive)
+   2. Exaggerated expand/contract driven by voice volume
+   3. Virus-spreading blue effect during processing
+   4. Color states: black (idle/speaking), blue (listening), red (muted)
+      All states keep the same white distortion — just the base changes.
+   5. Color transitions have a "pop" — brief intensity spike + scale kick
+
+   ─ IDLE:       black blob, gentle breathing
+   ─ LISTENING:  BLUE blob, big expand/contract with voice
+   ─ PROCESSING: virus-like blue spread + rhythmic pulse
+   ─ SPEAKING:   black blob, rhythmic pulse with TTS
+   ─ MUTED:      RED blob (overrides any state)                   */
+function VoiceBlob({ volumeRef, stateRef, mutedRef, splashPhase, tapTimeRef, orbScaleRef, mouseRef }) {
+  const mesh = useRef(null);
+  const hover = useRef(false);
+  const smoothPosX = useRef(0);
+  const smoothPosY = useRef(0.4);
+  const uniforms = useMemo(() => ({
+    u_time: { value: 0 },
+    u_intensity: { value: 0.3 },
+    u_color: { value: new Color(0x000000) },
+    u_spread: { value: 0 },
+    u_spread_color: { value: new Color(0x1a6bff) },
+  }), []);
+  const smoothVol = useRef(0);
+  const smoothScale = useRef(4.0); /* Start super zoomed in for splash */
+  const smoothIntensity = useRef(0.3);
+  const smoothSpread = useRef(0);
+  const processingStarted = useRef(0);
+  const prevState = useRef("idle");
+  const prevMuted = useRef(false);
+  const targetColor = useRef(new Color(0x000000));
+  /* Color transition "pop" — decays from 1.0 to 0 over ~0.5s */
+  const colorPop = useRef(0);
+
+  /* ── Animation event refs (init far in past so they don't fire on mount) ── */
+  const whipStart = useRef(-999);
+  const dropStart = useRef(-999);
+  const squeezeStart = useRef(-999);
+
+  /* Organic breathing — layered sine waves at irrational ratios */
+  const breathe = (t) =>
+    Math.sin(t * 0.47) * 0.10 +
+    Math.sin(t * 0.83) * 0.07 +
+    Math.sin(t * 0.29) * 0.04;
+
+  useFrame((state) => {
+    const { clock } = state;
+    if (!mesh.current) return;
+    const material = mesh.current.material;
+    const t = clock.getElapsedTime();
+    const curState = stateRef.current;
+    const vol = volumeRef.current || 0;
+    const muted = mutedRef?.current || false;
+
+    /* Detect state or mute transitions → trigger animations */
+    const oldState = prevState.current;
+    const stateChanged = curState !== oldState;
+    const muteChanged = muted !== prevMuted.current;
+    if (stateChanged || muteChanged) {
+      if (curState === "processing") {
+        processingStarted.current = t;
+        squeezeStart.current = t;
+      }
+      /* Barge-in: speaking → listening = time whip */
+      if (oldState === "speaking" && curState === "listening") {
+        whipStart.current = t;
+      }
+      /* Error/cancel: processing → idle = gravity drop */
+      if (oldState === "processing" && curState === "idle") {
+        dropStart.current = t;
+      }
+      colorPop.current = 1.0; /* trigger pop */
+      prevState.current = curState;
+      prevMuted.current = muted;
+    }
+
+    /* Decay the pop smoothly */
+    colorPop.current *= 0.96;
+    if (colorPop.current < 0.005) colorPop.current = 0;
+    const pop = colorPop.current;
+
+    /* Smooth volume — fast attack, slow organic release */
+    const volAlpha = vol > smoothVol.current ? 0.22 : 0.018;
+    smoothVol.current += (vol - smoothVol.current) * volAlpha;
+    const sv = smoothVol.current;
+
+    /* Shader time — reference speed + time whip on barge-in */
+    const whipAge = t - whipStart.current;
+    const whipOffset = whipAge < 1.5
+      ? Math.sin(whipAge * 12) * 0.35 * Math.exp(-whipAge * 3)
+      : 0;
+    material.uniforms.u_time.value = 0.4 * t + whipOffset;
+
+    /* ── Per-state behavior ── */
+    let targetIntensity = 0.3;
+    let targetScale = 1.0;
+    let targetSpread = 0;
+
+    if (curState === "idle") {
+      targetIntensity = hover.current ? 0.65 : 0.5;
+      targetScale = 1.0 + breathe(t);
+      targetSpread = 0;
+      targetColor.current.copy(BLOB_BLACK);
+
+    } else if (curState === "listening") {
+      /* BLUE base — exaggerated expand/contract with voice */
+      targetIntensity = 0.5 + sv * 0.3;
+      targetScale = 1.0 + sv * 2.5 + breathe(t) * (1 + sv * 6);
+      targetSpread = 0;
+      targetColor.current.copy(BLOB_BLUE);
+
+    } else if (curState === "processing") {
+      /* Virus-like blue spread + rhythmic pulsing */
+      const pT = t - processingStarted.current;
+      const rawSpread = Math.min(pT / 2.5, 1.0);
+      const eased = rawSpread < 0.5
+        ? 4 * rawSpread * rawSpread * rawSpread
+        : 1 - Math.pow(-2 * rawSpread + 2, 3) / 2;
+      targetSpread = eased * 0.8; /* 80% — virus attacks but doesn't fully consume */
+
+      targetIntensity = 0.5 + targetSpread * 0.2;
+      targetScale = 0.8 + Math.sin(t * 1.8) * 0.2 + Math.sin(t * 2.7) * 0.1;
+      targetColor.current.copy(BLOB_BLACK);
+
+    } else if (curState === "speaking") {
+      targetIntensity = 0.5 + sv * 0.15;
+      targetScale = 1.0 + sv * 1.2 + breathe(t * 1.2) + Math.sin(t * 1.8) * 0.12;
+      targetSpread = 0;
+      targetColor.current.copy(BLOB_BLACK);
+    }
+
+    /* MUTED override — red base */
+    if (muted) {
+      targetColor.current.copy(BLOB_RED);
+    }
+
+    /* Cap max scale — dramatic but won't totally cover the text */
+    targetScale = Math.min(targetScale, 2.5);
+
+    /* Pop effects: intensity spike + scale kick on color change */
+    targetIntensity += pop * 0.4;
+    targetScale += pop * 0.15;
+
+    /* ── Tap flash: virus burst on orb tap (~1s) ── */
+    const tapAge = (Date.now() - (tapTimeRef?.current || 0)) / 1000;
+    if (tapAge >= 0 && tapAge < 1.0) {
+      let tapSpread;
+      if (tapAge < 0.2) {
+        /* Fast invasion — quadratic ease in */
+        const p = tapAge / 0.2;
+        tapSpread = 0.8 * p * p;
+      } else {
+        /* Slow recession — quadratic ease out */
+        const p = (tapAge - 0.2) / 0.8;
+        tapSpread = 0.8 * Math.max(0, 1 - p * p);
+      }
+      targetSpread = Math.max(targetSpread, tapSpread);
+    }
+
+    /* Smooth color — faster lerp (0.06) for snappy, satisfying transitions */
+    material.uniforms.u_color.value.lerp(targetColor.current, 0.06);
+
+    /* Smooth intensity */
+    smoothIntensity.current = MathUtils.lerp(
+      smoothIntensity.current,
+      targetIntensity,
+      0.03,
+    );
+    material.uniforms.u_intensity.value = smoothIntensity.current;
+
+    /* Smooth spread */
+    const spreadLerp = targetSpread > smoothSpread.current ? 0.04 : 0.015;
+    smoothSpread.current += (targetSpread - smoothSpread.current) * spreadLerp;
+    material.uniforms.u_spread.value = smoothSpread.current;
+
+    /* Smooth scale — splash zoom-out or normal interactive */
+    if (splashPhase === "splash") {
+      smoothScale.current += (ORB_BASE - smoothScale.current) * 0.04;
+    } else {
+      const desired = targetScale * ORB_BASE;
+      const expanding = desired > smoothScale.current;
+      const sLerp = expanding ? 0.1 : 0.04;
+      smoothScale.current += (desired - smoothScale.current) * sLerp;
+    }
+
+    /* ── Processing squeeze-stretch: squash X, stretch Y for first 0.6s ── */
+    const sqAge = t - squeezeStart.current;
+    let sx = smoothScale.current, sy = smoothScale.current, sz = smoothScale.current;
+    if (curState === "processing" && sqAge < 0.6) {
+      const sqP = sqAge / 0.6;
+      const sqWave = Math.sin(sqP * Math.PI) * 0.15;
+      sx = smoothScale.current * (1 - sqWave);
+      sy = smoothScale.current * (1 + sqWave * 1.3);
+      sz = smoothScale.current * (1 - sqWave * 0.5);
+    }
+    mesh.current.scale.set(sx, sy, sz);
+    if (orbScaleRef) orbScaleRef.current = smoothScale.current;
+
+    /* ── Mouse-tracking: orb subtly follows cursor ── */
+    const mx = (mouseRef?.current?.x ?? 0.5) - 0.5;
+    const my = (mouseRef?.current?.y ?? 0.5) - 0.5;
+    const targetX = mx * 0.12;
+    const targetY = 0.4 - my * 0.08;
+    smoothPosX.current += (targetX - smoothPosX.current) * 0.025;
+    smoothPosY.current += (targetY - smoothPosY.current) * 0.025;
+
+    /* ── Gravity drop: Y drops & bounces on processing→idle ── */
+    const dropAge = t - dropStart.current;
+    let dropOffset = 0;
+    if (dropAge < 1.2) {
+      const damping = Math.exp(-dropAge * 4);
+      dropOffset = -0.15 * damping * Math.cos(dropAge * 18);
+    }
+
+    /* ── Muted shiver: tiny rapid trembling ── */
+    let shiverX = 0, shiverY = 0;
+    if (muted) {
+      shiverX = Math.sin(t * 45) * 0.003 + Math.sin(t * 67) * 0.002;
+      shiverY = Math.cos(t * 53) * 0.002 + Math.cos(t * 71) * 0.001;
+    }
+
+    mesh.current.position.x = smoothPosX.current + shiverX;
+    mesh.current.position.y = smoothPosY.current + dropOffset + shiverY;
+  });
+
+  return (
+    <mesh
+      ref={mesh}
+      scale={ORB_BASE}
+      position={[0, 0.4, 0]}
+      onPointerOver={() => (hover.current = true)}
+      onPointerOut={() => (hover.current = false)}
+    >
+      <icosahedronGeometry args={[2, 20]} />
+      <shaderMaterial
+        vertexShader={blobVertexShader}
+        fragmentShader={blobFragmentShader}
+        uniforms={uniforms}
+      />
+    </mesh>
+  );
+}
+
+/* ── Tap ring animation component ── */
+function TapRing({ trigger }) {
+  return (
+    <AnimatePresence>
+      {trigger > 0 && (
+        <motion.div
+          key={trigger}
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
+          style={{
+            width: 180, height: 180,
+            border: "2px solid rgba(21, 101, 192, 0.8)",
+            boxShadow: "0 0 20px rgba(21, 101, 192, 0.3), inset 0 0 20px rgba(21, 101, 192, 0.1)",
+          }}
+          initial={{ scale: 0.9, opacity: 0.9 }}
+          animate={{ scale: 1.8, opacity: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+        />
+      )}
+    </AnimatePresence>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   DRAW PARTICLE SPHERE — Legacy 2D visual pipeline (retained for reference)
    ══════════════════════════════════════════════════════════ */
 function drawParticleSphere(
   ctx, w, h, time, vol, state, particles, color,
@@ -771,6 +1167,12 @@ export default function VoiceOverlay({ isOpen, onClose }) {
   const [historyVersion, setHistoryVersion] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [ttsSpeedIdx, setTtsSpeedIdx] = useState(0);
+  const tapTimeRef = useRef(0);
+  const orbScaleRef = useRef(ORB_BASE);
+  const [volLevel, setVolLevel] = useState(0);
+  const [stateRipple, setStateRipple] = useState(0);
+  /* ── No splash — go straight to ready ── */
+  const [splashPhase, setSplashPhase] = useState("splash");
 
   /* ── Refs ── */
   const canvasRef = useRef(null);
@@ -1064,8 +1466,12 @@ export default function VoiceOverlay({ isOpen, onClose }) {
           }
         }
 
-        /* Orb volume source */
-        if (stateRef.current === S.SPEAKING && isSpeakingTTSRef.current) {
+        /* Orb volume source — zero out when user is muted */
+        if (mutedRef.current) {
+          volumeRef.current = 0;
+          volAnimRef.current = requestAnimationFrame(volTick);
+          return; /* Skip all turn detection when muted */
+        } else if (stateRef.current === S.SPEAKING && isSpeakingTTSRef.current) {
           const t = Date.now();
           volumeRef.current = 0.3 + Math.sin(t / 200) * 0.15 + Math.sin(t / 317) * 0.1;
         } else {
@@ -1303,10 +1709,10 @@ export default function VoiceOverlay({ isOpen, onClose }) {
           cancelTTSRef.current?.();
           if (abortRef.current) abortRef.current.abort();
           recognition.abort();
-          /* Near-instant transition — 50ms is enough for Chrome to clean up */
+          /* Near-instant transition — 30ms is enough for Chrome to clean up */
           setTimeout(() => {
             if (activeRef.current) startRecognitionRef.current?.(false);
-          }, 50);
+          }, 30);
           return;
         }
 
@@ -1340,6 +1746,9 @@ export default function VoiceOverlay({ isOpen, onClose }) {
     recognition.onend = () => {
       if (recognitionRef.current !== recognition) return;
       recognitionRef.current = null;
+
+      /* If user muted, do NOT auto-restart recognition */
+      if (mutedRef.current) return;
 
       if (passiveModeRef.current) {
         /* Restart passive recognition INSTANTLY — zero gap means zero missed wake words.
@@ -1383,7 +1792,7 @@ export default function VoiceOverlay({ isOpen, onClose }) {
             if (activeRef.current && stateRef.current === S.LISTENING) {
               startRecognitionRef.current?.(false);
             }
-          }, 150);
+          }, 80);
         } else {
           transition(S.IDLE);
         }
@@ -1393,7 +1802,11 @@ export default function VoiceOverlay({ isOpen, onClose }) {
     recognition.onerror = (e) => {
       if (recognitionRef.current !== recognition) return;
       if (e.error === "no-speech" || e.error === "aborted") { /* normal */ }
-      else if (e.error === "not-allowed") setStatusLabel("Mic permission denied");
+      else if (e.error === "not-allowed") {
+        setStatusLabel("Mic permission denied");
+        recognitionRef.current = null;
+        transition(S.IDLE);
+      }
       else if (e.error === "network" || e.error === "service-not-allowed") {
         /* Network/service error — retry recognition after delay */
         recognitionRef.current = null;
@@ -1412,7 +1825,7 @@ export default function VoiceOverlay({ isOpen, onClose }) {
       /* Use `passive` from closure, not passiveModeRef which can be overwritten by race */
       setTimeout(() => {
         if (activeRef.current) startRecognitionRef.current?.(passive);
-      }, 500);
+      }, 200);
       return;
     }
 
@@ -1622,10 +2035,18 @@ export default function VoiceOverlay({ isOpen, onClose }) {
     mutedRef.current = next;
     setIsMuted(next);
     if (next) {
-      /* Mute user's mic — pause recognition so user's audio is not captured */
+      /* Mute user's mic:
+         1. Stop speech recognition so no more text is captured
+         2. Disable mic stream tracks so the audio input is truly silent
+         3. Zero out volume so the orb contracts to resting state */
       try { recognitionRef.current?.stop(); } catch {}
+      micStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = false; });
+      volumeRef.current = 0;
     } else {
-      /* Unmute user's mic — restart listening if in a listening-compatible state */
+      /* Unmute user's mic:
+         1. Re-enable mic stream tracks
+         2. Restart recognition if in a listening-compatible state */
+      micStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = true; });
       const s = stateRef.current;
       if (s === S.IDLE || s === S.LISTENING) {
         startRecognitionRef.current?.(false);
@@ -1832,10 +2253,18 @@ export default function VoiceOverlay({ isOpen, onClose }) {
   useEffect(() => {
     if (!isOpen) return;
     activeRef.current = true;
-    let resizeHandler = null;
 
-    const init = async () => {
-      resizeHandler = startCanvas();
+    /* ── Splash screen → auto-reveal orb after 2s ── */
+    setSplashPhase("splash");
+    const t1 = null, t2 = null, t3 = null;
+
+    const splashTimer = setTimeout(() => {
+      if (!activeRef.current) return;
+      setSplashPhase("ready");
+    }, 2000);
+
+    const initTimer = setTimeout(async () => {
+      if (!activeRef.current) return;
       const micOk = await startMic();
       if (!micOk) {
         transition(S.IDLE);
@@ -1861,7 +2290,6 @@ export default function VoiceOverlay({ isOpen, onClose }) {
         ttsQueueRef.current.push(greeting);
         isSpeakingTTSRef.current = true;
         speakNextRef.current?.();
-        /* Safety: ensure we leave SPEAKING after greeting even if TTS pipeline hiccups */
         setTimeout(() => {
           if (activeRef.current && stateRef.current === S.SPEAKING
               && !isSpeakingTTSRef.current && ttsQueueRef.current.length === 0) {
@@ -1872,10 +2300,9 @@ export default function VoiceOverlay({ isOpen, onClose }) {
         setTimeout(() => {
           if (activeRef.current && stateRef.current === S.IDLE)
             startRecognitionRef.current?.(true);
-        }, 500);
+        }, 200);
       }
-    };
-    init();
+    }, 2300); /* Start mic after splash screen fades */
 
     /* Keyboard shortcuts */
     const onKey = (e) => {
@@ -1923,27 +2350,26 @@ export default function VoiceOverlay({ isOpen, onClose }) {
         setTimeout(() => {
           if (!activeRef.current) return;
           const st = stateRef.current;
-          if (st === S.SPEAKING || st === S.PROCESSING) {
+          if (st === S.SPEAKING || st === S.PROCESSING || st === S.IDLE) {
             startRecognitionRef.current?.(true); /* passive wake word */
+          } else if (st === S.LISTENING) {
+            startRecognitionRef.current?.(false); /* active listening */
           }
-          /* IDLE and LISTENING don't need restart — they handle their own recognition */
         }, 300);
       }
     };
 
-    const onResize = () => resizeHandler?.();
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("resize", onResize);
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
       activeRef.current = false;
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(initTimer); clearTimeout(splashTimer);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisibility);
       if (animRef.current) cancelAnimationFrame(animRef.current);
       stopRecognition();
@@ -1968,9 +2394,42 @@ export default function VoiceOverlay({ isOpen, onClose }) {
       volumeRef.current = 0;
       accumRotRef.current = 0;
       lastTimeRef.current = 0;
+      setSplashPhase("ready");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, startCanvas, startMic, stopRecognition, stopMic, cancelTTS, transition]);
+  }, [isOpen, startMic, stopRecognition, stopMic, cancelTTS, transition]);
+
+  /* ── State transition ripple ── */
+  useEffect(() => {
+    if (splashPhase === "ready") setStateRipple((c) => c + 1);
+  }, [voiceState, splashPhase]);
+
+  /* ── Smart UI loop — volume bars ── */
+  useEffect(() => {
+    if (!isOpen) return;
+    let raf;
+    let last = 0;
+    const tick = () => {
+      const now = Date.now();
+      if (now - last > 70) {
+        last = now;
+        const vl = Math.round(volumeRef.current * 8) / 8;
+        setVolLevel((prev) => (prev !== vl ? vl : prev));
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isOpen]);
+
+  /* ── Compute background ambient tint from voice state ── */
+  const bgTint = voiceState === S.LISTENING
+    ? "radial-gradient(ellipse at 50% 31%, rgba(21,101,192,0.05) 0%, transparent 55%)"
+    : voiceState === S.PROCESSING
+    ? "radial-gradient(ellipse at 50% 31%, rgba(130,90,255,0.04) 0%, transparent 55%)"
+    : isMuted
+    ? "radial-gradient(ellipse at 50% 31%, rgba(198,40,40,0.03) 0%, transparent 55%)"
+    : "none";
 
   /* ══════════════════════════════════════════════════════
      RENDER
@@ -1980,198 +2439,358 @@ export default function VoiceOverlay({ isOpen, onClose }) {
       {isOpen && (
         <motion.div
           className="fixed inset-0 z-[70] flex flex-col"
-          style={{ background: "#0e0e0e" }}
+          style={{ background: "radial-gradient(ellipse at 50% 31%, #f5f5f5 0%, #ececec 45%, #e3e3e3 100%)" }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.4 }}
         >
-          {/* ── Full-screen canvas ── */}
-          <canvas
-            ref={canvasRef}
-            className="absolute inset-0 w-full h-full"
-            style={{ display: "block" }}
-          />
-
-          {/* ── Orb tap target (invisible, over particle sphere) ── */}
-          <motion.div
-            className="absolute left-1/2 -translate-x-1/2 w-[220px] h-[220px] cursor-pointer select-none rounded-full z-10"
-            style={{ top: `calc(${voiceState === S.SPEAKING ? "46%" : "40%"} - 110px)`, transition: "top 0.6s cubic-bezier(0.16, 1, 0.3, 1)" }}
-            onClick={handleInteract}
-            whileTap={{ scale: 0.96 }}
-          />
-
-          {/* ── Text area ── */}
+          {/* Subtle noise grain overlay (main bg) */}
           <div
-            className="absolute left-0 right-0 z-10 flex flex-col items-center px-6"
+            className="absolute inset-0 pointer-events-none"
             style={{
-              top: voiceState === S.SPEAKING ? "calc(46% + 130px)" : "calc(40% + 130px)",
-              maxHeight: "30%",
-              transition: "top 0.6s cubic-bezier(0.16, 1, 0.3, 1)",
-              overflow: "hidden",
+              zIndex: 0,
+              opacity: 0.04,
+              backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+              backgroundSize: "128px 128px",
             }}
+          />
+          {/* ── Ambient state tint — subtle color wash behind the orb ── */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{ zIndex: 0, background: bgTint, transition: "background 0.8s ease" }}
+          />
+
+          {/* ── Three.js Orb Canvas — always full-screen, orb sized by ORB_BASE ── */}
+          <Canvas
+            gl={{ alpha: true, antialias: true }}
+            camera={{ position: [0.0, 0.0, 8.0], fov: 15 }}
+            style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", zIndex: 1, background: "transparent" }}
           >
-            {/* Currently spoken phrase — clean single-sentence display */}
-            <AnimatePresence mode="wait">
-              {voiceState === S.SPEAKING && currentPhrase && (
-                <motion.div
-                  key={`phrase-${phraseKey}`}
-                  className="max-w-[560px] w-full text-center"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-                >
-                  <p className="text-[17px] text-white/70 leading-[1.8] font-light tracking-wide"
-                     style={{ textShadow: "0 0 30px rgba(40,215,220,0.05)" }}>
-                    {currentPhrase}
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />
+            <directionalLight intensity={2} position={[0, 2, 3]} />
+            <Environment preset="city" environmentIntensity={0.5} />
+            <VoiceBlob volumeRef={volumeRef} stateRef={stateRef} mutedRef={mutedRef} splashPhase={splashPhase} tapTimeRef={tapTimeRef} orbScaleRef={orbScaleRef} mouseRef={mouseRef} />
+          </Canvas>
 
-            {/* User speech (interim text) */}
-            {voiceState === S.LISTENING && interimText && (
-              <motion.p
-                className="text-[17px] text-white/50 leading-relaxed italic text-center max-w-[500px] mt-2"
-                style={{ textShadow: "0 0 20px rgba(90,170,255,0.08)" }}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-              >
-                {interimText}
-              </motion.p>
-            )}
-
-            {/* Processing — show what user said */}
-            {voiceState === S.PROCESSING && (
-              <motion.p
-                className="text-[16px] text-white/35 leading-relaxed text-center max-w-[500px]"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-              >
-                &ldquo;{accumulatedTextRef.current || lastInterimRef.current || interimText}&rdquo;
-              </motion.p>
-            )}
-
-            {/* Tool chips */}
-            <AnimatePresence>
-              {activeTools.length > 0 && (
-                <motion.div
-                  className="mt-3 flex flex-wrap justify-center gap-1.5"
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                >
-                  {activeTools.map((t) => (
-                    <motion.span
-                      key={t.id}
-                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] tracking-wide ${
-                        t.done
-                          ? "bg-emerald-500/10 text-emerald-400/60 border border-emerald-500/20"
-                          : "bg-white/[0.05] text-white/50 border border-white/[0.08]"
-                      }`}
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      layout
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        t.done ? "bg-emerald-400/60" : "bg-white/30 animate-pulse"
-                      }`} />
-                      {t.desc}
-                    </motion.span>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          {/* ── Bottom section: status + buttons ── */}
-          <div className="absolute bottom-0 left-0 right-0 z-10 flex flex-col items-center pb-6">
-            {/* Status text */}
-            <motion.p
-              className="mb-4 text-[14px] font-light tracking-wider uppercase"
-              style={{ color: "rgba(120, 190, 180, 0.4)", letterSpacing: "0.12em" }}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.3 }}
-            >
-              {statusLabel || (voiceState === S.IDLE ? "Tap the orb to begin" : voiceState === S.LISTENING ? "Listening\u2026" : "")}
-            </motion.p>
-
-            {/* Buttons — glass floating bar */}
+          {/* ── Dynamic shadow — shifts color with state ── */}
+          {splashPhase === "ready" && (
             <motion.div
-              className="flex items-center gap-3 px-4 py-2 rounded-full bg-white/[0.03] border border-white/[0.06] backdrop-blur-md"
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4, duration: 0.5 }}
+              className="absolute left-1/2 pointer-events-none"
+              style={{
+                zIndex: 2,
+                top: "40%",
+                width: 180,
+                height: 28,
+                borderRadius: "50%",
+                background: voiceState === S.LISTENING
+                  ? "radial-gradient(ellipse, rgba(21,101,192,0.08) 0%, transparent 70%)"
+                  : voiceState === S.PROCESSING
+                  ? "radial-gradient(ellipse, rgba(130,90,255,0.06) 0%, transparent 70%)"
+                  : isMuted
+                  ? "radial-gradient(ellipse, rgba(198,40,40,0.06) 0%, transparent 70%)"
+                  : "radial-gradient(ellipse, rgba(0,0,0,0.04) 0%, transparent 70%)",
+                transition: "background 0.6s ease",
+              }}
+              initial={{ opacity: 0, x: "-50%" }}
+              animate={{ opacity: 1, x: "-50%" }}
+              transition={{ delay: 0.6, duration: 0.8 }}
+            />
+          )}
+
+          {/* ── State transition ripple — expands from orb on state change ── */}
+          <AnimatePresence>
+            {stateRipple > 1 && splashPhase === "ready" && (
+              <motion.div
+                key={stateRipple}
+                className="absolute left-1/2 pointer-events-none rounded-full"
+                style={{
+                  zIndex: 2,
+                  top: "31%",
+                  width: 80,
+                  height: 80,
+                  border: `1.5px solid ${
+                    voiceState === S.LISTENING ? "rgba(21,101,192,0.25)"
+                    : voiceState === S.PROCESSING ? "rgba(130,90,255,0.2)"
+                    : isMuted ? "rgba(198,40,40,0.2)"
+                    : "rgba(0,0,0,0.06)"
+                  }`,
+                }}
+                initial={{ scale: 0.3, opacity: 0.9, x: "-50%", y: "-50%" }}
+                animate={{ scale: 3.5, opacity: 0, x: "-50%", y: "-50%" }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 1.0, ease: [0.16, 1, 0.3, 1] }}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* ── Floating ambient particles — slow orbit around the orb ── */}
+          {splashPhase === "ready" && [
+            { x: 42, y: 24, dur: 12, dx: 25, dy: 20, size: 2.5, op: 0.05 },
+            { x: 58, y: 22, dur: 15, dx: -20, dy: 30, size: 2, op: 0.04 },
+            { x: 38, y: 38, dur: 10, dx: 30, dy: -15, size: 3, op: 0.06 },
+            { x: 62, y: 36, dur: 14, dx: -25, dy: -20, size: 2, op: 0.04 },
+            { x: 50, y: 18, dur: 18, dx: 15, dy: 25, size: 2.5, op: 0.05 },
+          ].map((p, i) => (
+            <motion.div
+              key={`particle-${i}`}
+              className="absolute rounded-full pointer-events-none"
+              style={{
+                zIndex: 2,
+                width: p.size,
+                height: p.size,
+                left: `${p.x}%`,
+                top: `${p.y}%`,
+                background: voiceState === S.LISTENING
+                  ? `rgba(21,101,192,${p.op * 3})`
+                  : `rgba(0,0,0,${p.op})`,
+                transition: "background 0.8s ease",
+              }}
+              animate={{
+                x: [0, p.dx, -p.dx * 0.5, 0],
+                y: [0, p.dy, -p.dy * 0.7, 0],
+                opacity: [0.4, 1, 0.6, 0.4],
+              }}
+              transition={{
+                duration: p.dur,
+                repeat: Infinity,
+                ease: "easeInOut",
+                delay: i * 1.2,
+              }}
+            />
+          ))}
+
+          {/* ── Orb tap target — triggers virus flash + interaction ── */}
+          {splashPhase === "ready" && (
+            <div
+              className="absolute left-1/2 -translate-x-1/2"
+              style={{ zIndex: 10, top: "calc(31% - 90px)", width: 180, height: 180 }}
             >
-              {/* Close */}
-              <motion.button
-                onClick={onClose}
-                className="w-10 h-10 rounded-full flex items-center justify-center text-white/25 hover:text-white/50 hover:bg-white/[0.06] transition-all duration-300"
-                whileTap={{ scale: 0.88 }}
-                title="Close (Esc)"
-              >
-                <X className="w-[16px] h-[16px]" />
-              </motion.button>
+              <motion.div
+                className="w-full h-full cursor-pointer select-none rounded-full"
+                onClick={() => { tapTimeRef.current = Date.now(); handleInteract(); }}
+                whileTap={{ scale: 0.96 }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.3 }}
+              />
+            </div>
+          )}
 
-              {/* Mute toggle */}
-              <motion.button
-                onClick={toggleMute}
-                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
-                  isMuted ? "text-orange-400/60 bg-orange-500/[0.08]" : "text-white/25 hover:text-white/50 hover:bg-white/[0.06]"
-                }`}
-                whileTap={{ scale: 0.88 }}
-                title={isMuted ? "Unmute mic (M)" : "Mute mic (M)"}
-              >
-                {isMuted ? <MicOff className="w-[16px] h-[16px]" /> : <Mic className="w-[16px] h-[16px]" />}
-              </motion.button>
+          {/* ── Text area — per-pixel contrast via mix-blend-mode: difference ── */}
+          {/* White text + difference blend: dark on gray bg, white on black orb */}
+          {splashPhase === "ready" && (
+            <motion.div
+              className="absolute left-0 right-0 flex flex-col items-center px-6"
+              style={{
+                zIndex: 10,
+                top: "48%",
+                bottom: "120px",
+                overflow: "hidden",
+                mixBlendMode: "difference",
+              }}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.5, duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {/* Currently spoken phrase */}
+              <AnimatePresence mode="wait">
+                {voiceState === S.SPEAKING && currentPhrase && (
+                  <motion.div
+                    key={`phrase-${phraseKey}`}
+                    className="max-w-[560px] w-full text-center"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  >
+                    <p
+                      className="text-[17px] leading-[1.8] font-light tracking-wide"
+                      style={{ color: "rgba(255,255,255,0.92)" }}
+                    >
+                      {currentPhrase}
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
-              {/* Mic / Stop button — primary action */}
-              <motion.button
-                onClick={handleInteract}
-                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-500 ${
-                  voiceState === S.LISTENING
-                    ? "bg-blue-500/[0.15] text-white/90 shadow-[0_0_20px_rgba(90,170,255,0.1)]"
-                    : voiceState === S.SPEAKING
-                    ? "bg-red-500/[0.12] text-red-300/80 hover:text-red-300 hover:bg-red-500/[0.2]"
-                    : "bg-white/[0.06] text-white/40 hover:text-white/60 hover:bg-white/[0.1]"
-                }`}
-                whileTap={{ scale: 0.9 }}
-                animate={voiceState === S.LISTENING ? {
-                  boxShadow: ["0 0 0px rgba(90,170,255,0)", "0 0 30px rgba(90,170,255,0.15)", "0 0 0px rgba(90,170,255,0)"],
-                } : voiceState === S.SPEAKING ? {
-                  boxShadow: ["0 0 0px rgba(255,100,100,0)", "0 0 20px rgba(255,100,100,0.1)", "0 0 0px rgba(255,100,100,0)"],
-                } : {}}
-                transition={voiceState === S.LISTENING || voiceState === S.SPEAKING ? { duration: 2, repeat: Infinity, ease: "easeInOut" } : {}}
-              >
-                {voiceState === S.SPEAKING ? <Square className="w-4 h-4" /> : <Mic className="w-5 h-5" />}
-              </motion.button>
+              {/* User speech (interim text) */}
+              {voiceState === S.LISTENING && interimText && (
+                <motion.p
+                  className="text-[17px] leading-relaxed italic text-center max-w-[500px] mt-2"
+                  style={{ color: "rgba(255,255,255,0.80)" }}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                >
+                  {interimText}
+                </motion.p>
+              )}
 
-              {/* Speed toggle */}
-              <motion.button
-                onClick={cycleSpeed}
-                className="w-10 h-10 rounded-full flex items-center justify-center text-white/25 hover:text-white/50 hover:bg-white/[0.06] transition-all duration-300 relative"
-                whileTap={{ scale: 0.88 }}
-                title="TTS speed (S)"
-              >
-                <Gauge className="w-[16px] h-[16px]" />
-                <span className="absolute -top-0.5 -right-0.5 text-[8px] text-cyan-400/60 font-medium">
-                  {SPEED_OPTIONS[ttsSpeedIdx].label}
-                </span>
-              </motion.button>
+              {/* Processing — show what user said */}
+              {voiceState === S.PROCESSING && (
+                <motion.p
+                  className="text-[16px] leading-relaxed text-center max-w-[500px]"
+                  style={{ color: "rgba(255,255,255,0.65)" }}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                >
+                  &ldquo;{accumulatedTextRef.current || lastInterimRef.current || interimText}&rdquo;
+                </motion.p>
+              )}
             </motion.div>
+          )}
 
-            {/* Keyboard hints */}
-            <motion.p
-              className="mt-3 text-[10px] text-white/15 tracking-wider"
+          {/* ── Tool chips — separate from blend container so colors stay normal ── */}
+          {splashPhase === "ready" && (
+            <motion.div
+              className="absolute left-0 right-0 flex justify-center px-6"
+              style={{ zIndex: 10, top: "54%" }}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 1 }}
+              transition={{ delay: 0.6, duration: 0.5 }}
             >
-              Space = push-to-talk &middot; M = mute &middot; S = speed &middot; Esc = close
-            </motion.p>
-          </div>
+              <AnimatePresence>
+                {activeTools.length > 0 && (
+                  <motion.div
+                    className="flex flex-wrap justify-center gap-1.5"
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                  >
+                    {activeTools.map((t) => (
+                      <motion.span
+                        key={t.id}
+                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] tracking-wide ${
+                          t.done
+                            ? "bg-emerald-500/10 text-emerald-600/60 border border-emerald-500/20"
+                            : "bg-black/[0.04] text-black/40 border border-black/[0.08]"
+                        }`}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        layout
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                          t.done ? "bg-emerald-500/60" : "bg-black/20 animate-pulse"
+                        }`} />
+                        {t.desc}
+                      </motion.span>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          )}
+
+          {/* ── Bottom section: status + buttons (shown after splash) ── */}
+          {splashPhase === "ready" && (
+            <motion.div
+              className="absolute bottom-0 left-0 right-0 flex flex-col items-center pb-6"
+              style={{ zIndex: 10 }}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.7, duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {/* Status text */}
+              <p
+                className="mb-4 text-[13px] font-light tracking-wider uppercase"
+                style={{ color: "rgba(0, 0, 0, 0.22)", letterSpacing: "0.14em" }}
+              >
+                {statusLabel || (
+                  voiceState === S.IDLE ? "Tap the orb to begin"
+                  : voiceState === S.LISTENING ? "Listening\u2026"
+                  : voiceState === S.PROCESSING ? "Thinking\u2026"
+                  : voiceState === S.SPEAKING ? "Tap orb to stop"
+                  : ""
+                )}
+              </p>
+
+              {/* Buttons — glass floating bar */}
+              <div
+                className="flex items-center gap-3 px-4 py-2 rounded-full bg-black/[0.03] border border-black/[0.06] backdrop-blur-md"
+              >
+                {/* Close */}
+                <motion.button
+                  onClick={onClose}
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-black/25 hover:text-black/50 hover:bg-black/[0.04] transition-all duration-300"
+                  whileTap={{ scale: 0.88 }}
+                  title="Close (Esc)"
+                >
+                  <X className="w-[16px] h-[16px]" />
+                </motion.button>
+
+                {/* Mute toggle */}
+                <motion.button
+                  onClick={toggleMute}
+                  className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
+                    isMuted ? "text-orange-500/70 bg-orange-500/[0.08]" : "text-black/25 hover:text-black/50 hover:bg-black/[0.04]"
+                  }`}
+                  whileTap={{ scale: 0.88 }}
+                  title={isMuted ? "Unmute mic (M)" : "Mute mic (M)"}
+                >
+                  {isMuted ? <MicOff className="w-[16px] h-[16px]" /> : <Mic className="w-[16px] h-[16px]" />}
+                </motion.button>
+
+                {/* Volume indicator bars */}
+                <div className="flex items-end gap-[2px] h-4 mx-0.5">
+                  {[0.12, 0.30, 0.55].map((threshold, i) => (
+                    <div
+                      key={i}
+                      className="rounded-full"
+                      style={{
+                        width: 2.5,
+                        height: volLevel > threshold ? [6, 10, 14][i] : 3,
+                        background: volLevel > threshold
+                          ? (voiceState === S.LISTENING ? "rgba(59,130,246,0.5)"
+                            : isMuted ? "rgba(234,88,12,0.4)"
+                            : "rgba(0,0,0,0.22)")
+                          : "rgba(0,0,0,0.06)",
+                        transition: "height 0.1s ease, background 0.3s ease",
+                      }}
+                    />
+                  ))}
+                </div>
+
+                {/* Mic / Stop button — primary action */}
+                <motion.button
+                  onClick={handleInteract}
+                  className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-500 ${
+                    voiceState === S.LISTENING
+                      ? "bg-blue-500/[0.12] text-blue-600/80 shadow-[0_0_20px_rgba(90,170,255,0.1)]"
+                      : voiceState === S.SPEAKING
+                      ? "bg-red-500/[0.10] text-red-500/70 hover:text-red-500 hover:bg-red-500/[0.15]"
+                      : "bg-black/[0.04] text-black/40 hover:text-black/60 hover:bg-black/[0.08]"
+                  }`}
+                  whileTap={{ scale: 0.9 }}
+                  animate={voiceState === S.LISTENING ? {
+                    boxShadow: ["0 0 0px rgba(90,170,255,0)", "0 0 30px rgba(90,170,255,0.12)", "0 0 0px rgba(90,170,255,0)"],
+                  } : voiceState === S.SPEAKING ? {
+                    boxShadow: ["0 0 0px rgba(255,100,100,0)", "0 0 20px rgba(255,100,100,0.08)", "0 0 0px rgba(255,100,100,0)"],
+                  } : {}}
+                  transition={voiceState === S.LISTENING || voiceState === S.SPEAKING ? { duration: 2, repeat: Infinity, ease: "easeInOut" } : {}}
+                >
+                  {voiceState === S.SPEAKING ? <Square className="w-4 h-4" /> : <Mic className="w-5 h-5" />}
+                </motion.button>
+
+                {/* Speed toggle */}
+                <motion.button
+                  onClick={cycleSpeed}
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-black/25 hover:text-black/50 hover:bg-black/[0.04] transition-all duration-300 relative"
+                  whileTap={{ scale: 0.88 }}
+                  title="TTS speed (S)"
+                >
+                  <Gauge className="w-[16px] h-[16px]" />
+                  <span className="absolute -top-0.5 -right-0.5 text-[8px] text-black/40 font-medium">
+                    {SPEED_OPTIONS[ttsSpeedIdx].label}
+                  </span>
+                </motion.button>
+              </div>
+
+              {/* Keyboard hints */}
+              <p className="mt-3 text-[10px] text-black/[0.12] tracking-wider">
+                Space = push-to-talk &middot; M = mute &middot; S = speed &middot; Esc = close
+              </p>
+            </motion.div>
+          )}
         </motion.div>
       )}
     </AnimatePresence>

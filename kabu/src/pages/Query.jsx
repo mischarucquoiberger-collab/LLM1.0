@@ -28,8 +28,8 @@ function saveConversations(c) {
     const trimmed = c.slice(-MAX_SAVED_CONVOS).map(conv => ({
       ...conv,
       messages: (conv.messages || []).map(m => {
-        if (!m.toolCalls) return m;
-        return { ...m, toolCalls: m.toolCalls.map(tc => ({
+        if (!m.tools) return m;
+        return { ...m, tools: m.tools.map(tc => ({
           ...tc,
           price_history: undefined,
           source_details: undefined,
@@ -1120,7 +1120,7 @@ export default function Query() {
   useEffect(() => {
     if (!scrollRef.current || userScrolledUpRef.current) return;
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: isStreaming ? "auto" : "smooth" }));
-  }, [messages, streamText, streamTools, isStreaming]);
+  }, [messages, streamText, isStreaming]);
   const scrollToBottom = useCallback(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); userScrolledUpRef.current = false; setShowScrollBtn(false); }, []);
 
   useEffect(() => {
@@ -1339,7 +1339,7 @@ export default function Query() {
     if (abortRef.current) abortRef.current.abort();
     if (isListening) stopListening();
     streamingRef.current = false;
-    setMessages([]); setActiveConvoId(null); setInput(""); setStreamText(""); setStreamTools([]); setIsStreaming(false); setCompanyContext(null); setActiveFilter(null); textBufferRef.current = "";
+    setMessages([]); setActiveConvoId(null); setInput(""); setStreamText(""); setStreamTools([]); setIsStreaming(false); setCompanyContext(null); setActiveFilter(null); setSendGlow(false); textBufferRef.current = "";
     textareaRef.current?.focus();
   }, [isListening, stopListening]);
 
