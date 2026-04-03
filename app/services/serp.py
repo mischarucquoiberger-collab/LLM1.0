@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from typing import List, Dict
 import httpx
 
 from app.config import settings
 from app.services.concurrent import run_concurrent
+
+logger = logging.getLogger(__name__)
 
 _shared_http_client: httpx.Client | None = None
 
@@ -60,6 +64,26 @@ class SerpClient:
         if not self.api_key:
             return []
 
+        # Retry once on transient failures (rate limits, timeouts, 5xx)
+        last_exc = None
+        for attempt in range(2):
+            try:
+                return self._do_search(query, num, news)
+            except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning("SERP query failed (attempt 1), retrying: %s — %s", query[:40], exc)
+                    time.sleep(1)
+                else:
+                    logger.warning("SERP query failed (attempt 2), giving up: %s — %s", query[:40], exc)
+            except Exception as exc:
+                logger.warning("SERP unexpected error: %s — %s: %s", query[:40], type(exc).__name__, exc)
+                last_exc = exc
+                break
+
+        return []
+
+    def _do_search(self, query: str, num: int, news: bool) -> List[SerpResult]:
         if self.provider == "serper":
             payload = {"q": query, "num": num}
             if news:
@@ -152,10 +176,17 @@ class SerpClient:
             for query in news_queries:
                 tasks.append(lambda q=query: self.search(q, num=per_query, news=True))
 
+        total_tasks = len(tasks)
         batch_results = run_concurrent(tasks, max_workers=8)
+        failed_count = sum(1 for b in batch_results if not b)
         for batch in batch_results:
             if batch:
                 results.extend(batch)
+
+        if failed_count > 0:
+            logger.warning("SERP: %d/%d search tasks failed for %s (%s)", failed_count, total_tasks, name, stock_code)
+        if not results and total_tasks > 0:
+            logger.warning("SERP: ALL %d queries returned 0 results for %s (%s) — API key may be exhausted or rate-limited", total_tasks, name, stock_code)
 
         blacklist_domains = ["law.cornell.edu", "irs.gov", "sec.gov"]
         blacklist_terms = ["u.s. code", "limitations on assessment", "form 4810"]
@@ -171,4 +202,5 @@ class SerpClient:
                 continue
             filtered.append(r)
 
+        logger.info("SERP: %d web results for %s (%s) [%d queries, %d failed]", len(filtered), name, stock_code, total_tasks, failed_count)
         return filtered

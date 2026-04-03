@@ -1,17 +1,15 @@
-"""ETA prediction v6 — total-duration-centric with progress-to-time mapping.
+"""ETA prediction v7 — Kalman-filter pace tracking with stage-aware blending.
 
-With parallel pipeline execution, individual stage durations are unreliable
-(a stage may take 0.1s or 180s depending on what runs in parallel).
+Replaces the v6 static progress-to-time mapping with a 1D Kalman filter
+that tracks the live "seconds per progress-percent" pace.  This adapts
+in real-time as stages complete faster or slower than expected.
 
-Instead, this uses two primary signals:
-1. Historical total run duration — median of past runs by mode
-2. Elapsed extrapolation — using a progress-to-time mapping that correctly
-   accounts for Drafting being the bulk of the work
+Three layers:
+1. PaceKalman     — 1D Kalman filter on observed pace (s/%)
+2. StageAwareETA  — blends Kalman estimate with historical priors
+3. DisplayDamper  — smooth monotonic countdown with proportional corrections
 
-The progress-to-time map converts reported progress % (which is stage-based)
-into estimated time fraction (what % of total time has passed).  This is the
-key to accurate ETA: at 70% progress, we know we're only ~50% done time-wise
-because Drafting (60-90% progress) takes most of the remaining time.
+Historical data is persisted across server restarts in eta_history.json.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 from app.config import settings
 
@@ -32,32 +30,26 @@ STAGE_ORDER = [
     "Analysis", "Valuation", "Peers", "Drafting", "Rendering", "Complete",
 ]
 
-# Progress % at end of each stage — for progress bar interpolation.
 STAGE_ENDS = {
     "Starting": 5, "Company Info": 10, "Data Fetch": 25, "Extraction": 35,
     "Analysis": 45, "Valuation": 55, "Peers": 60, "Drafting": 90,
     "Rendering": 100, "Complete": 100,
 }
 
-# ── Progress-to-time mapping ──
-# Maps (progress %, time fraction) — calibrated for parallel pipeline.
-# Key insight: stages 25-60% (Extraction/Analysis/Valuation/Peers) often
-# complete in seconds due to parallelism, while Drafting (60-90%) takes
-# the majority of total time.
+# ── Progress-to-time mapping (used for historical fallback + interpolation) ──
 _PROGRESS_TIME = [
     (0,   0.00),
-    (5,   0.02),   # Starting — instant
-    (10,  0.05),   # Company Info — fast
-    (25,  0.18),   # Data Fetch — moderate
-    (35,  0.22),   # Extraction — often overlaps
-    (45,  0.25),   # Analysis — often overlaps
-    (55,  0.55),   # Valuation — significant J-Quants work
-    (60,  0.70),   # Peers — more J-Quants work
-    (90,  0.90),   # Drafting — fast with cache, slow without
-    (100, 1.00),   # Rendering + done
+    (5,   0.02),
+    (10,  0.05),
+    (25,  0.18),
+    (35,  0.22),
+    (45,  0.25),
+    (55,  0.55),
+    (60,  0.70),
+    (90,  0.90),
+    (100, 1.00),
 ]
 
-# Baseline total run durations (seconds) when no history exists.
 TOTAL_BASELINE = {"fast": 50, "full": 90}
 
 LOCK = threading.Lock()
@@ -115,109 +107,227 @@ def _get_expected_total(mode: str = "full") -> float:
     return float(TOTAL_BASELINE.get(mode, 200))
 
 
-def _raw_eta(job) -> float | None:
-    """Compute raw ETA using total-duration + elapsed extrapolation."""
-    step = getattr(job, "step", None)
-    if not step or step == "Complete":
-        return 0.0
+# ── Layer 1: 1D Kalman Filter on Pace ──
 
-    try:
-        mode = getattr(job, "mode", "full") or "full"
-        expected_total = _get_expected_total(mode)
+class PaceKalman:
+    """1D Kalman filter tracking 'seconds per progress-percent'.
 
-        # Total elapsed time since job started
-        total_elapsed = 0.0
-        started = getattr(job, "started_at", None)
-        if started:
-            try:
-                total_elapsed = max(
-                    (dt.datetime.now() - dt.datetime.fromisoformat(started)).total_seconds(), 0
-                )
-            except Exception:
-                pass
+    State: x = pace (s/%)
+    Simple constant-velocity model (pace assumed roughly constant between updates).
+    Adapts quickly to actual run speed via Kalman gain.
+    """
 
-        # Current progress — use stage position as floor
-        progress = getattr(job, "progress", 0) or 0
-        if step in STAGE_ORDER:
-            idx = STAGE_ORDER.index(step)
-            prev = STAGE_ORDER[idx - 1] if idx > 0 else None
-            floor_pct = STAGE_ENDS.get(prev, 0) if prev else 0
-            progress = max(progress, floor_pct)
+    def __init__(self, initial_pace: float, process_noise: float = 0.5,
+                 measurement_noise: float = 2.0):
+        self.x = initial_pace
+        self.P = 10.0           # initial uncertainty (high = trust measurements early)
+        self.Q = process_noise  # how much pace can change between updates
+        self.R = measurement_noise  # how noisy each measurement is
 
-        # Convert progress to time fraction (the key correction)
-        time_frac = _progress_to_time_frac(progress)
-        time_frac = max(0.01, min(time_frac, 0.99))
+    def update(self, measured_pace: float) -> float:
+        # Predict step (constant model: pace stays the same)
+        P_pred = self.P + self.Q
 
-        # Signal 1: expected_total minus elapsed
-        hist_eta = max(expected_total - total_elapsed, 0)
+        # Update step
+        K = P_pred / (P_pred + self.R)  # Kalman gain
+        self.x = self.x + K * (measured_pace - self.x)
+        self.P = (1 - K) * P_pred
 
-        # Signal 2: elapsed extrapolation using time fraction
-        elapsed_eta = None
-        if total_elapsed > 5 and time_frac > 0.03:
-            elapsed_eta = total_elapsed / time_frac * (1 - time_frac)
+        return self.x
 
-        # Blend: trust elapsed extrapolation more as we progress further
-        if elapsed_eta is not None:
-            w = min(0.85, time_frac * 1.6)
-            raw = (1 - w) * hist_eta + w * elapsed_eta
+    @property
+    def pace(self) -> float:
+        return max(self.x, 0.01)
+
+    @property
+    def confidence(self) -> float:
+        """0..1, higher = more confident."""
+        return max(0.0, 1.0 - self.P / (self.P + 5.0))
+
+
+# ── Layer 2: Stage-Aware ETA Computation ──
+
+class StageAwareETA:
+    """Combines Kalman-filtered pace with historical priors.
+
+    For early observations (<3), blends heavily with historical.
+    Once the Kalman filter has enough data, trusts live pace.
+    """
+
+    def __init__(self, mode: str = "full"):
+        self.mode = mode
+        hist_total = _get_expected_total(mode)
+        initial_pace = hist_total / 100.0  # seconds per percent
+
+        self.kalman = PaceKalman(
+            initial_pace=initial_pace,
+            process_noise=0.3,
+            measurement_noise=1.5,
+        )
+        self.last_progress = 0.0
+        self.last_time = None
+        self.last_progress_time = None  # when progress last changed
+        self.update_count = 0
+        self.job_start_time = None
+
+    def update(self, progress: float, current_time: float, step: str) -> float:
+        """Feed new observation, return raw ETA in seconds."""
+        if self.last_time is None:
+            self.last_time = current_time
+            self.last_progress = progress
+            self.last_progress_time = current_time
+            self.job_start_time = current_time
+            return self._historical_eta(progress)
+
+        dp = progress - self.last_progress
+        dt_sec = current_time - self.last_time
+
+        # Track when progress last changed (for stall detection)
+        if dp > 0.5:
+            self.last_progress_time = current_time
+
+        # Only update Kalman when we have meaningful progress delta
+        if dp > 0.5 and dt_sec > 0.1:
+            measured_pace = dt_sec / dp
+            measured_pace = max(0.05, min(measured_pace, 30.0))
+            self.kalman.update(measured_pace)
+            self.update_count += 1
+            self.last_progress = progress
+            self.last_time = current_time
+
+        remaining_pct = max(100.0 - progress, 0.0)
+
+        # Stall detection: if no progress for >3s, the Kalman pace is
+        # likely too optimistic. Blend in an elapsed-based correction.
+        stall_secs = current_time - (self.last_progress_time or current_time)
+        stall_boost = 0.0
+        if stall_secs > 3.0 and remaining_pct > 1:
+            # The longer we stall, the more we should distrust the fast pace
+            # Inject the stall duration as additional time remaining
+            stall_boost = stall_secs * 0.5  # half of stall time as buffer
+
+        # For very early run, blend with historical
+        if self.update_count < 3:
+            kalman_eta = remaining_pct * self.kalman.pace
+            hist_eta = self._historical_eta(progress)
+            w = self.update_count / 3.0
+            raw = (1 - w) * hist_eta + w * kalman_eta
         else:
-            raw = hist_eta
+            kalman_eta = remaining_pct * self.kalman.pace
+            hist_eta = self._historical_eta(progress)
+            raw = 0.1 * hist_eta + 0.9 * kalman_eta
 
-        return max(3.0, min(raw, 300.0))
+        # Apply stall correction: ensure ETA is at least the stall boost
+        raw = max(raw, stall_boost)
 
-    except Exception:
-        return None
+        # Also use total-elapsed sanity check: if we've used X% of expected
+        # time but only made Y% progress, adjust upward
+        if self.job_start_time:
+            total_elapsed = current_time - self.job_start_time
+            time_frac = _progress_to_time_frac(progress)
+            if time_frac > 0.05 and total_elapsed > 5:
+                elapsed_projection = total_elapsed / time_frac * (1 - time_frac)
+                # Take the max of Kalman estimate and elapsed projection,
+                # weighted toward whichever is larger (pessimistic = safer)
+                raw = max(raw, elapsed_projection * 0.4)
 
+        return max(2.0, min(raw, 600.0))
+
+    def _historical_eta(self, progress: float) -> float:
+        """Fallback: total_expected * (1 - time_fraction)."""
+        total = _get_expected_total(self.mode)
+        time_frac = _progress_to_time_frac(progress)
+        return total * (1.0 - time_frac)
+
+
+# ── Layer 3: Display Damper ──
+
+class DisplayDamper:
+    """Smooth ETA for display with proportional corrections.
+
+    Ticks down naturally at ~1s/s.
+    Downward corrections: fast (users love seeing ETA shrink).
+    Upward corrections: proportional, not fixed-cap (handles big stalls).
+    """
+
+    def __init__(self):
+        self.displayed_eta = None
+        self.last_ts = None
+
+    def smooth(self, raw_eta: float, now: float, stage_changed: bool) -> float:
+        if self.displayed_eta is None:
+            self.displayed_eta = raw_eta
+            self.last_ts = now
+            return round(raw_eta)
+
+        elapsed = now - self.last_ts
+        self.last_ts = now
+
+        # Where the countdown would be if ticking at 1s/s
+        expected = max(self.displayed_eta - elapsed, 0)
+
+        if raw_eta <= expected:
+            # Ahead of schedule — fast drop (60% toward raw each update)
+            result = 0.4 * expected + 0.6 * raw_eta
+        elif stage_changed:
+            # Stage boundary — allow larger proportional correction
+            delta = raw_eta - expected
+            result = expected + min(delta, max(delta * 0.5, 8.0))
+        else:
+            # Behind within same stage — proportional but bounded
+            delta = raw_eta - expected
+            correction = min(delta * 0.25, max(expected * 0.25, 4.0))
+            result = expected + correction
+
+        # Floor: if raw says work remains (>3s), don't show 1s
+        if raw_eta > 3.0:
+            result = max(result, 3.0)
+
+        result = max(1.0, min(result, 600.0))
+        self.displayed_eta = result
+        return round(result)
+
+
+# ── Public API ──
 
 def predict_eta(job) -> float | None:
-    """ETA with smooth monotonic countdown.
-
-    Per-job state ensures the displayed ETA ticks down steadily.
-    Downward corrections are fast; upward corrections are limited.
-    """
-    raw = _raw_eta(job)
-    if raw is None:
-        return None
+    """ETA with Kalman-filtered pace tracking + smooth display damping."""
+    step = getattr(job, "step", None)
+    if not step or step == "Complete":
+        return 0
 
     job_id = getattr(job, "job_id", None)
     if not job_id:
-        return round(raw)
+        return None
 
     now = time.time()
+    mode = getattr(job, "mode", "full") or "full"
+
+    # Current progress — use stage position as floor
+    progress = getattr(job, "progress", 0) or 0
+    if step in STAGE_ORDER:
+        idx = STAGE_ORDER.index(step)
+        prev = STAGE_ORDER[idx - 1] if idx > 0 else None
+        floor_pct = STAGE_ENDS.get(prev, 0) if prev else 0
+        progress = max(progress, floor_pct)
 
     with LOCK:
         state = _JOB_ETA_STATE.get(job_id)
 
         if state is None:
-            _JOB_ETA_STATE[job_id] = {"eta": raw, "ts": now, "step": job.step}
-            return round(raw)
+            estimator = StageAwareETA(mode=mode)
+            damper = DisplayDamper()
+            _JOB_ETA_STATE[job_id] = {
+                "estimator": estimator,
+                "damper": damper,
+                "step": step,
+            }
+            state = _JOB_ETA_STATE[job_id]
 
-        prev_eta = state["eta"]
-        prev_ts = state["ts"]
-        elapsed_since = now - prev_ts
-
-        # Where countdown should be if ticking at 1s/s
-        expected = max(prev_eta - elapsed_since, 0)
-
-        stage_changed = job.step != state["step"]
-
-        if raw <= expected:
-            # Ahead of schedule — drop quickly (users love seeing ETA shrink)
-            smoothed = 0.3 * expected + 0.7 * raw
-        elif stage_changed:
-            # Stage transition — allow moderate upward correction
-            smoothed = expected + min(raw - expected, 8.0)
-        else:
-            # Behind within same stage — tiny increase only
-            smoothed = expected + min(raw - expected, 2.0)
-
-        smoothed = max(2.0, min(smoothed, 300.0))
-
-        state["eta"] = smoothed
-        state["ts"] = now
-        state["step"] = job.step
-
-        return round(smoothed)
+        raw = state["estimator"].update(progress, now, step)
+        stage_changed = step != state["step"]
+        state["step"] = step
+        return state["damper"].smooth(raw, now, stage_changed)
 
 
 def interpolate_progress(job) -> int:
@@ -241,19 +351,8 @@ def interpolate_progress(job) -> int:
         if not job.stage_started_at:
             return max(base_progress, start_pct)
 
-        # Total elapsed from job start
         mode = getattr(job, "mode", "full") or "full"
         expected_total = _get_expected_total(mode)
-
-        total_elapsed = 0.0
-        started = getattr(job, "started_at", None)
-        if started:
-            try:
-                total_elapsed = max(
-                    (dt.datetime.now() - dt.datetime.fromisoformat(started)).total_seconds(), 0
-                )
-            except Exception:
-                pass
 
         # Expected time window for this stage (from progress-to-time map)
         t_start = _progress_to_time_frac(start_pct)
@@ -267,16 +366,13 @@ def interpolate_progress(job) -> int:
         if stage_elapsed < 0.3:
             frac = 0.02
         elif stage_elapsed >= expected_stage_secs:
-            # Overrun: asymptotically approach 95%
             overshoot = stage_elapsed / expected_stage_secs
             frac = 0.90 + 0.05 * (1 - 1.0 / max(overshoot, 1.0))
             frac = min(frac, 0.95)
         else:
             frac = min(stage_elapsed / expected_stage_secs, 0.90)
 
-        # Ease-out: fast start, decelerates near end
         eased = 1 - (1 - frac) ** 2.5
-
         interpolated = int(start_pct + eased * (end_pct - start_pct))
         return max(base_progress, interpolated)
 
@@ -296,7 +392,6 @@ def record_job(job):
     if job_id:
         cleanup_job(job_id)
 
-    # Record total run duration (primary signal for future ETAs)
     started = getattr(job, "started_at", None)
     finished = getattr(job, "finished_at", None)
     mode = getattr(job, "mode", "full") or "full"
@@ -317,7 +412,6 @@ def record_job(job):
         except Exception:
             pass
 
-    # Also record individual stage durations (backward compat + diagnostics)
     stage_history = getattr(job, "stage_history", []) or []
     with LOCK:
         for entry in stage_history:

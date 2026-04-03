@@ -92,6 +92,26 @@ export default function GenerateReport() {
     if (isComplete) setSidebarOpen(false);
   }, [isComplete]);
 
+  // Sync active generating state to localStorage (for Home page indicator)
+  useEffect(() => {
+    if (jobId && isRunning) {
+      try {
+        localStorage.setItem("active_generating", JSON.stringify({
+          jobId, ticker, companyName, startedAt: createdAt, mode,
+        }));
+      } catch {}
+    }
+    if (isComplete || isError) {
+      try {
+        const stored = localStorage.getItem("active_generating");
+        if (stored) {
+          const data = JSON.parse(stored);
+          if (data.jobId === jobId) localStorage.removeItem("active_generating");
+        }
+      } catch {}
+    }
+  }, [jobId, isRunning, isComplete, isError, ticker, companyName, createdAt, mode]);
+
   // 1-second interval to keep elapsed timer ticking during the run
   useEffect(() => {
     if (!createdAt) { setElapsed(null); return; }

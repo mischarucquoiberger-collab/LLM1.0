@@ -326,6 +326,14 @@ async def start(
     company_name: str = Form(""),
     mode: str = Form("full"),
 ):
+    import re as _re
+    # Input validation / sanitization
+    stock_code = _re.sub(r"[^0-9A-Za-z.]", "", stock_code.strip())[:10]
+    if not stock_code:
+        raise HTTPException(status_code=400, detail="Invalid stock code.")
+    company_name = _re.sub(r"[<>&\"']", "", company_name.strip())[:100]
+    if mode not in ("full", "fast"):
+        mode = "full"
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
         JOBS[job_id] = JobStatus(
@@ -372,6 +380,12 @@ async def status(job_id: str):
             for s in data["stage_history"]
             if "stage" in s and "duration" in s
         }
+    # Strip events from polling response — they can contain control chars
+    # and are large (use /stream/{job_id} for live events instead)
+    data.pop("events", None)
+    # Sanitize error field (tracebacks can contain tabs/newlines)
+    if data.get("error") and isinstance(data["error"], str):
+        data["error"] = data["error"].replace("\t", "  ").replace("\n", " | ")
     return JSONResponse(data)
 
 

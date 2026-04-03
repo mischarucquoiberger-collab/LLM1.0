@@ -1177,6 +1177,13 @@ class EdinetClient:
             "合計", "計", "消去", "調整", "全社", "セグメント間", "配賦不能",
             "調整額", "のれん", "減価償却", "その他の項目",
         ]
+        # Financial line items that are NOT segments (balance sheet, cash flow, stock)
+        _NON_SEGMENT_KW = [
+            "総資産", "純資産", "資本金", "利益剰余金", "自己資本",
+            "キャッシュ", "現金", "株式", "優先株", "普通株", "自己株",
+            "社債", "借入金", "有利子負債", "繰延", "退職給付",
+            "月期", "年度", "四半期", "新株予約権",
+        ]
 
         best_segments: List[Dict[str, Any]] = []
 
@@ -1239,6 +1246,12 @@ class EdinetClient:
                     continue
                 # Skip totals, adjustments, elimination rows
                 if any(kw in name for kw in _SKIP_ROW_KW):
+                    continue
+                # Skip financial line items (balance sheet, cash flow, stock classes)
+                if any(kw in name for kw in _NON_SEGMENT_KW):
+                    continue
+                # Skip date-like rows (e.g. "2024年3月期")
+                if re.search(r"^\d{2,4}年|^[第]\d|^平成|^令和", name):
                     continue
                 # Skip if name looks like a sub-header (all alpha or all kanji with no numbers)
                 if name in ("", "—", "―", "－"):

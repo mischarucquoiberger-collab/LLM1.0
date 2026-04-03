@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import datetime as dt
 import html as html_lib
+import logging
 import re
 import time
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 import httpx
 from pathlib import Path
@@ -30,6 +33,218 @@ _KNOWN_ACTIVISTS = {
 }
 _ACTIVIST_PURPOSE_KEYWORDS = ["提案", "経営", "資本"]
 _POISON_PILL_KEYWORDS = ["買収防衛策", "ポイズンピル", "ライツプラン", "事前警告型"]
+
+# ── Static Japanese → English translations ─────────────────────────
+# TSE TOPIX-33 sector names
+_SECTOR_JP_TO_EN = {
+    "水産・農林業": "Fishery, Agriculture & Forestry",
+    "鉱業": "Mining",
+    "建設業": "Construction",
+    "食料品": "Foods",
+    "繊維製品": "Textiles & Apparel",
+    "パルプ・紙": "Pulp & Paper",
+    "化学": "Chemicals",
+    "医薬品": "Pharmaceuticals",
+    "石油・石炭製品": "Oil & Coal Products",
+    "ゴム製品": "Rubber Products",
+    "ガラス・土石製品": "Glass & Ceramics",
+    "鉄鋼": "Iron & Steel",
+    "非鉄金属": "Nonferrous Metals",
+    "金属製品": "Metal Products",
+    "機械": "Machinery",
+    "電気機器": "Electric Appliances",
+    "輸送用機器": "Transportation Equipment",
+    "精密機器": "Precision Instruments",
+    "その他製品": "Other Products",
+    "電気・ガス業": "Electric Power & Gas",
+    "陸運業": "Land Transportation",
+    "海運業": "Marine Transportation",
+    "空運業": "Air Transportation",
+    "倉庫・運輸関連業": "Warehousing & Harbor Transport",
+    "情報・通信業": "Information & Communication",
+    "情報･通信業": "Information & Communication",  # variant dot
+    "卸売業": "Wholesale Trade",
+    "小売業": "Retail Trade",
+    "銀行業": "Banking",
+    "証券、商品先物取引業": "Securities & Commodity Futures",
+    "証券・商品先物取引業": "Securities & Commodity Futures",
+    "保険業": "Insurance",
+    "その他金融業": "Other Financial Services",
+    "不動産業": "Real Estate",
+    "サービス業": "Services",
+}
+
+# Common institutional shareholder names (appear on most Japanese stocks)
+# Order matters: longer/more specific patterns first
+_SHAREHOLDER_JP_TO_EN = {
+    # Full entity names (match first before fragment replacements)
+    "日本マスタートラスト信託銀行": "Master Trust Bank of Japan",
+    "日本カストディ銀行": "Custody Bank of Japan",
+    "三井住友信託銀行": "Sumitomo Mitsui Trust Bank",
+    "三菱UFJ信託銀行": "MUFG Trust Bank",
+    "三菱UFJ銀行": "MUFG Bank",
+    "みずほ銀行": "Mizuho Bank",
+    "三井住友銀行": "Sumitomo Mitsui Banking Corp",
+    "りそな銀行": "Resona Bank",
+    "日本生命保険": "Nippon Life Insurance",
+    "第一生命保険": "Dai-ichi Life Insurance",
+    "明治安田生命保険": "Meiji Yasuda Life Insurance",
+    "住友生命保険": "Sumitomo Life Insurance",
+    "野村證券": "Nomura Securities",
+    "大和証券": "Daiwa Securities",
+    "日本郵政": "Japan Post Holdings",
+    "ノルウェー政府": "Government of Norway",
+    "ノルウェー銀行": "Norges Bank",
+    "豊田自動織機": "Toyota Industries",
+    "トヨタ不動産": "Toyota Fudosan",
+    "トヨタ自動車": "Toyota Motor",
+    "孫正義": "Masayoshi Son",
+    "孫 正義": "Masayoshi Son",
+    "三木谷浩史": "Hiroshi Mikitani",
+    "三木谷晴子": "Haruko Mikitani",
+    "楽天グループ": "Rakuten Group",
+    "ソフトバンクグループ": "SoftBank Group",
+    "財務大臣": "Minister of Finance",
+    "財務省": "Ministry of Finance",
+    "日本国政府": "Government of Japan",
+    # Common katakana transliterations of foreign names
+    "ゴールドマン・サックス": "Goldman Sachs",
+    "ゴールドマン･サックス": "Goldman Sachs",
+    "JPモルガン": "JP Morgan",
+    "モルガン・スタンレー": "Morgan Stanley",
+    "モルガン･スタンレー": "Morgan Stanley",
+    "ブラックロック": "BlackRock",
+    "バンガード": "Vanguard",
+    "ステート・ストリート": "State Street",
+    "ステート･ストリート": "State Street",
+    "バンク・オブ・ニューヨーク": "Bank of New York",
+    "バンク･オブ･ニユーヨーク": "Bank of New York",
+    "バンク・オブ・ニユーヨーク": "Bank of New York",
+    "シティバンク": "Citibank",
+    "モクスレイ": "Moxley",
+    "デンソー": "DENSO",
+    # Common katakana financial terms (fragment-level)
+    "アセットマネージメント": "Asset Management",
+    "アセットマネジメント": "Asset Management",
+    "インターナショナル": "International",
+    "セキュリティーズ": "Securities",
+    "デポジタリーレシートホルダーズ": "Depositary Receipt Holders",
+    "デポジタリー": "Depositary",
+    "レシートホルダーズ": "Receipt Holders",
+    "ホルダーズ": "Holders",
+    "フォー": " for ",
+    "クライアント": "Client",
+    "チェース": "Chase",
+    "メロン": "Mellon",
+    "トラスト": "Trust",
+    "バンク": "Bank",
+    "ウエスト": "West",
+    "トリーティ": "Treaty",
+    "クリムゾン": "Crimson",
+    # Japanese corporate suffixes
+    "合同会社": "",  # LLC - remove, keep the actual name
+    "株式会社": "",  # Co., Ltd. - remove
+    "(有)": "",
+    "（有）": "",
+    # Additional foreign entity names in katakana
+    "ジャパン": "Japan",
+    "アメリカ": "America",
+    "ヨーロッパ": "Europe",
+    "キャピタル": "Capital",
+    "マネジメント": "Management",
+    "マネージメント": "Management",
+    "パートナーズ": "Partners",
+    "ファンド": "Fund",
+    "エヌ・ヴィ": "N.V.",
+    "エルエルシー": "LLC",
+    "リミテッド": "Limited",
+    # Common Japanese personal/family names (in shareholder/filer context)
+    "孫": "Son",
+    "三木谷": "Mikitani",
+    "柳井": "Yanai",
+    "永守": "Nagamori",
+    "滝崎": "Takizaki",
+    "三木谷興産": "Mikitani Kosan",
+    "正義": "Masayoshi",
+    "浩史": "Hiroshi",
+    "晴子": "Haruko",
+    # Operational terms
+    "信託口": "Trust Account",
+    "退職給付信託口": "Pension Trust Account",
+    "退職給付": "Pension",
+    "自社": "Treasury Stock",
+    "自己株口": "Treasury Account",
+    "運用": "managed by",
+    "グループ": "Group",
+    "興産": "Kosan",
+}
+
+# EDINET filing type translations
+_FILING_TYPE_JP_TO_EN = {
+    "有価証券報告書": "Annual Securities Report",
+    "四半期報告書": "Quarterly Report",
+    "半期報告書": "Semi-Annual Report",
+    "臨時報告書": "Extraordinary Report",
+    "訂正臨時報告書": "Corrected Extraordinary Report",
+    "大量保有報告書": "Large Shareholding Report",
+    "変更報告書": "Amendment Report",
+    "訂正報告書": "Correction Report",
+    "公開買付届出書": "Tender Offer Notice",
+    "内部統制報告書": "Internal Control Report",
+    "確認書": "Confirmation Letter",
+    "訂正有価証券報告書": "Corrected Annual Report",
+    "自己株券買付状況報告書": "Treasury Stock Purchase Report",
+    "特例対象株券等": "Special Exemption Securities",
+}
+
+# TSE exchange tier names
+_EXCHANGE_JP_TO_EN = {
+    "プライム": "TSE Prime",
+    "スタンダード": "TSE Standard",
+    "グロース": "TSE Growth",
+    "マザーズ": "TSE Growth",  # old name
+    "JASDAQ": "JASDAQ",
+}
+
+
+def _translate_jp_text(text: str | None) -> str:
+    """Best-effort translation of Japanese text to English using static maps."""
+    if not text or not _contains_japanese(text):
+        return text or ""
+    # Try direct sector match
+    if text in _SECTOR_JP_TO_EN:
+        return _SECTOR_JP_TO_EN[text]
+    # Try shareholder name matching (substring-based)
+    result = text
+    for jp, en in _SHAREHOLDER_JP_TO_EN.items():
+        if jp in result:
+            result = result.replace(jp, en)
+    # Try filing type matching
+    for jp, en in _FILING_TYPE_JP_TO_EN.items():
+        if jp in result:
+            result = result.replace(jp, en)
+    # Exchange tier
+    for jp, en in _EXCHANGE_JP_TO_EN.items():
+        if jp in result:
+            result = result.replace(jp, en)
+    # Clean up: replace full-width chars with ASCII equivalents
+    result = result.replace("･", " ").replace("＆", "&").replace("・", " ")
+    result = result.replace("　", " ").replace("－", "-").replace("（", "(").replace("）", ")")
+    # Strip Japanese period descriptions like "第29期(2025/01/01-2025/12/31)"
+    result = re.sub(r"[－\-]第\d+期.*$", "", result)
+    result = re.sub(r"第\d+期", "", result)
+    # Clean double spaces
+    result = re.sub(r"  +", " ", result).strip()
+    return result
+
+
+def _strip_jp_from_parenthetical(text: str) -> str:
+    """Remove Japanese text in parentheses, e.g. 'Masayoshi Son (孫 正義)' → 'Masayoshi Son'."""
+    if not text or not _contains_japanese(text):
+        return text or ""
+    # Remove parenthetical Japanese: (孫 正義), （豊田自動織機）
+    result = re.sub(r"\s*[（(][^)）]*[\u3000-\u9fff][^)）]*[)）]", "", text)
+    return result.strip()
 
 
 def _safe_json(data: Dict) -> str:
@@ -531,12 +746,86 @@ def _coerce_percent_value(value: Any) -> float | None:
 
 
 _JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+# Full-width CJK + katakana + hiragana + full-width chars
+_CJK_RE = re.compile(r"[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef]")
 
 
 def _contains_japanese(text: str | None) -> bool:
     if not text:
         return False
     return bool(_JAPANESE_RE.search(text))
+
+
+# ── Non-segment item detection ─────────────────────────────
+# These Japanese terms are financial line items (balance sheet, cash flow,
+# stock classes, dates) and must NEVER appear as business segments.
+_NON_SEGMENT_JP_KW = [
+    "総資産", "純資産", "資本金", "利益剰余金", "自己資本",
+    "キャッシュ・フロー", "キャッシュフロー", "現金及び", "現金同等物",
+    "株式", "優先株", "普通株", "自己株", "新株予約権",
+    "社債", "借入金", "有利子負債", "長期借入",
+    "減価償却", "のれん", "繰延税金", "退職給付",
+    "月期", "年度", "四半期", "決算", "会計期間",
+    "連結", "単体", "個別", "合計", "小計",
+    "従業員", "役員", "取締役", "本社", "設立",
+]
+_NON_SEGMENT_EN_KW = [
+    "total assets", "net assets", "capital stock", "retained earnings",
+    "cash flow", "cash and cash equiv", "depreciation", "goodwill",
+    "preferred stock", "common stock", "treasury stock",
+    "borrowings", "bonds payable", "interest-bearing",
+    "quarterly", "fiscal year", "consolidated", "standalone",
+    "employees", "employee", "head office", "established",
+    "capital expenditure", "dividend", "share price",
+    "as of april", "as of march", "as of june", "as of september",
+    "as of december", "as of january", "as of february",
+]
+# Date-like pattern: "2024年3月期", "FY2024", etc.
+_DATE_SEGMENT_RE = re.compile(
+    r"^\d{2,4}年|^FY\d{2,4}|^\d{4}[-/]\d{1,2}|^[第]\d|^平成|^令和"
+)
+# Numbered prefix: "１．", "2.", "（1）", etc.
+_NUMBER_PREFIX_RE = re.compile(
+    r"^[\d１２３４５６７８９０]+[.．)）]\s*|^[（(]\d+[)）]\s*|^[・•]\s*"
+)
+
+
+def _is_non_segment_item(name: str) -> bool:
+    """Return True if the name looks like a financial line item, not a business segment."""
+    if not name:
+        return True
+    n = name.strip()
+    # Date-like
+    if _DATE_SEGMENT_RE.search(n):
+        return True
+    # Japanese financial terms
+    for kw in _NON_SEGMENT_JP_KW:
+        if kw in n:
+            return True
+    # English financial terms
+    nl = n.lower()
+    for kw in _NON_SEGMENT_EN_KW:
+        if kw in nl:
+            return True
+    # Catch garbled entries: mostly digits, very long, or contain parenthetical dates
+    if len(n) > 60:
+        return True
+    # Entries that are clearly not segment names (e.g., "000 employees (as of April 2025, in")
+    if re.search(r"\d{3,}\s+employees|\(as of\s|in\s+\d{4}[,)]", nl):
+        return True
+    return False
+
+
+def _clean_segment_name(name: str) -> str:
+    """Clean up a segment name: remove numbered prefixes, strip HTML tags, trim whitespace."""
+    if not name:
+        return name
+    # Strip any HTML tags (defense-in-depth)
+    name = re.sub(r"<[^>]+>", "", name)
+    name = _NUMBER_PREFIX_RE.sub("", name).strip()
+    # Remove trailing "事業" / "セグメント" / "部門" if redundant (keep if the name IS the keyword)
+    # e.g. "アパレル事業" → keep as-is (translation will handle)
+    return name[:40]
 
 
 def _contains_japanese_in_json(obj: Any) -> bool:
@@ -1159,6 +1448,10 @@ def _translate_filer_name(name: str) -> str:
     # If the name is now pure ASCII (already English), return as-is
     if name.isascii():
         return name.strip()
+    # Check main shareholder dictionary first (covers common institutional names + people)
+    result = _translate_jp_text(name)
+    if not _contains_japanese(result):
+        return result.strip()
     # Strip common suffixes
     for suffix in ["株式会社", "有限会社", "合同会社", "合資会社", "保険相互会社", "相互会社"]:
         name = name.replace(suffix, "").strip()
@@ -1256,7 +1549,13 @@ def _translate_filer_name(name: str) -> str:
         return result
     # Last resort: use _translate_short_text (LLM) if it looks Japanese
     if _contains_japanese(name):
-        return _translate_short_text(name) or name
+        translated = _translate_short_text(name) or name
+        # Strip parenthetical Japanese the LLM may have kept
+        translated = _strip_jp_from_parenthetical(translated)
+        # If still has Japanese, hard-strip all CJK characters
+        if _contains_japanese(translated):
+            translated = _strip_japanese_from_text(translated)
+        return translated or name
     return name
 
 
@@ -1362,6 +1661,13 @@ def _fetch_activist_radar_data(stock_code: str, edinet_docs_raw: list) -> Dict[s
         unique_filings.append(f)
 
     filings = unique_filings
+
+    # Final safety: ensure no Japanese leaks into filer/purpose fields
+    for f in filings:
+        if _contains_japanese(f.get("filer", "")):
+            f["filer"] = _strip_japanese_from_text(_strip_jp_from_parenthetical(f["filer"]))
+        if _contains_japanese(f.get("purpose", "")):
+            f["purpose"] = _strip_japanese_from_text(f["purpose"])
 
     return {"filings": filings[:8], "has_poison_pill": False}
 
@@ -1541,11 +1847,12 @@ def _sanitize_narrative(narrative: Dict[str, Any]) -> Dict[str, Any]:
     cleaned = dict(narrative)
 
     # Strip any remaining Japanese characters from narrative text fields
-    for key in ("summary_text", "outlook_summary"):
+    # Both legacy and new field names
+    for key in ("summary_text", "outlook_summary", "company_profile", "business_performance", "material_note"):
         val = cleaned.get(key)
         if isinstance(val, str) and _contains_japanese(val):
             cleaned[key] = _strip_japanese_from_text(val)
-    for key in ("company_bullets", "bull_case", "bear_case"):
+    for key in ("company_bullets", "bull_case", "bear_case", "investment_thesis"):
         val = cleaned.get(key)
         if isinstance(val, list):
             cleaned[key] = [
@@ -1553,9 +1860,11 @@ def _sanitize_narrative(narrative: Dict[str, Any]) -> Dict[str, Any]:
                 for item in val
             ]
     # Allow generous lengths for analytical text
-    for key in ("summary_text", "outlook_summary"):
+    for key in ("summary_text", "outlook_summary", "company_profile", "business_performance"):
         cleaned[key] = _sanitize_text(cleaned.get(key), 2000)
+    cleaned["material_note"] = _sanitize_text(cleaned.get("material_note"), 500)
     cleaned["company_bullets"] = sanitize_list(cleaned.get("company_bullets"), 500)
+    cleaned["investment_thesis"] = sanitize_list(cleaned.get("investment_thesis"), 500)
     cleaned["bull_case"] = sanitize_list(cleaned.get("bull_case"), 600)
     cleaned["bear_case"] = sanitize_list(cleaned.get("bear_case"), 600)
     corp = cleaned.get("corporate_info")
@@ -3644,7 +3953,8 @@ def build_report_payload(
 
         try:
             serp_results = fut_serp.result() or []
-        except Exception:
+        except Exception as _serp_exc:
+            logger.warning("SERP search_company_context failed: %s: %s", type(_serp_exc).__name__, _serp_exc)
             serp_results = []
 
         if resolved_company_name == "Unknown Company":
@@ -4145,8 +4455,8 @@ def build_report_payload(
         "company": {
             "name": resolved_company_name,
             "stock_code": stock_code,
-            "sector": company_info.sector if company_info else None,
-            "market": company_info.market if company_info else None,
+            "sector": _translate_jp_text(company_info.sector) if company_info and company_info.sector else None,
+            "market": _translate_jp_text(company_info.market) if company_info and company_info.market else None,
         },
         "financials": financial_kpis,
         "prices": price_kpis,
@@ -4180,14 +4490,28 @@ def build_report_payload(
             warnings.append(f"J-Quants price error: {prices_error}")
         else:
             warnings.append("No price rows from J-Quants.")
+    web_source_count = len([s for s in sources if s.get("type") in ("web", "news")])
+    if web_source_count == 0 and settings.serp_api_key:
+        warnings.append("Web sources unavailable — SERP API may be rate-limited or temporarily down.")
+    elif not settings.serp_api_key:
+        warnings.append("No SERP API key configured — web sources disabled.")
     # Valuation warning deferred to build_report_context (valuation runs in background)
 
     data_health["warnings"] = warnings
 
+    _fact_sector = _translate_jp_text(company_info.sector) if company_info and company_info.sector else "Unknown"
+    _fact_market = _translate_jp_text(company_info.market) if company_info and company_info.market else "Unknown"
+    # Use English company name for LLM context to prevent Japanese names in narrative
+    _fact_company_name = KNOWN_CODE_NAME_EN.get(stock_code) or resolved_company_name
+    if _contains_japanese(_fact_company_name):
+        # If the resolved name is Japanese, try to use the English name from profile
+        _en_name = (merged_profile or {}).get("company_name") or ""
+        if _en_name and not _contains_japanese(_en_name):
+            _fact_company_name = _en_name
     facts_summary = [
-        f"Company: {resolved_company_name} ({stock_code})",
-        f"Sector: {company_info.sector if company_info else 'Unknown'}",
-        f"Market: {company_info.market if company_info else 'Unknown'}",
+        f"Company: {_fact_company_name} ({stock_code})",
+        f"Sector: {_fact_sector}",
+        f"Market: {_fact_market}",
         f"Sources: {len(sources)}",
         f"EDINET filings: {len(edinet_docs)}",
         f"Financial rows: {len(financial_kpis.get('rows', []))}",
@@ -4291,7 +4615,7 @@ def build_report_payload(
         "company_name": final_company_name,
         "company_name_en": KNOWN_CODE_NAME_EN.get(stock_code),
         "stock_code": stock_code,
-        "sector": company_info.sector if company_info else None,
+        "sector": _translate_jp_text(company_info.sector) if company_info and company_info.sector else None,
         "is_etf": _is_fund,
         "fund_type": _fund_type,  # "ETF" | "REIT" | None
         "sources": sources,
@@ -4406,94 +4730,209 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
     rev_growth = fin_summary.get("revenue_growth")
     op_growth = fin_summary.get("operating_profit_growth")
 
+    # Helper: get prior-year data for trend context
+    prev = rows_sorted[-2] if len(rows_sorted) >= 2 else {}
+    prev_roe = prev.get("roe")
+    dps = latest.get("dps")
+    eps = latest.get("eps")
+    capex = latest.get("capex")
+    employees = profile.get("employees") or ""
+    core_biz = profile.get("core_businesses") or ""
+    hq = profile.get("head_office") or ""
+
     # --- company_profile ---
-    parts = [f"{company_name} ({stock_code}) operates in the {sector} sector."]
+    en_name = KNOWN_CODE_NAME_EN.get(stock_code) or company_name
+    parts = [f"{en_name} ({stock_code})"]
+    if hq:
+        parts[0] += f", headquartered in {hq},"
     if revenue:
-        part = f"The company reported revenue of ¥{_format_number(revenue)} in the latest fiscal period"
-        if op_margin:
-            part += f" with an operating margin of {op_margin*100:.1f}%"
-        parts.append(part + ".")
-    core_biz = profile.get("core_businesses")
+        parts.append(f"is a ¥{_format_number(revenue)}-revenue {sector.lower()} company")
     if core_biz:
-        parts.append(f"Core business activities include {core_biz}.")
+        parts.append(f"operating across {core_biz}")
+    else:
+        parts.append(f"in the {sector} sector")
+    parts_str = " ".join(parts) + "."
+    detail_parts = []
+    if employees:
+        detail_parts.append(f"With {employees} employees")
+    if op_margin:
+        margin_pct = op_margin * 100
+        if margin_pct > 15:
+            detail_parts.append(f"generating an operating margin of {margin_pct:.1f}%, well above sector peers")
+        elif margin_pct > 8:
+            detail_parts.append(f"generating an operating margin of {margin_pct:.1f}%")
+        else:
+            detail_parts.append(f"operating at a {margin_pct:.1f}% margin")
+    if detail_parts:
+        parts_str += " " + ", ".join(detail_parts) + "."
     if roe:
-        quality = "strong" if roe > 0.10 else "moderate" if roe > 0.05 else "below-average"
-        parts.append(f"ROE of {roe*100:.1f}% indicates {quality} capital efficiency relative to Japanese market peers.")
+        parts_str += f" ROE of {roe*100:.1f}% "
+        if roe > 0.15:
+            parts_str += "ranks among the strongest in its peer group."
+        elif roe > 0.08:
+            parts_str += "indicates solid capital efficiency."
+        else:
+            parts_str += "reflects the capital intensity of its operations."
     if eq_ratio:
-        stance = "conservative" if eq_ratio > 0.5 else "balanced" if eq_ratio > 0.3 else "leveraged"
-        parts.append(f"The company maintains a {stance} balance sheet with equity ratio of {eq_ratio*100:.0f}%.")
-    company_profile = " ".join(parts)
+        parts_str += f" The balance sheet carries a {eq_ratio*100:.0f}% equity ratio"
+        if total_assets:
+            parts_str += f" on ¥{_format_number(total_assets)} total assets"
+        parts_str += "."
+    company_profile = parts_str
 
     # --- business_performance ---
     perf_parts = []
     if rev_growth is not None and revenue:
-        direction = "grew" if rev_growth > 0 else "declined"
-        perf_parts.append(f"{company_name} revenue {direction} {abs(rev_growth)*100:.1f}% YoY to ¥{_format_number(revenue)}")
+        direction = "rose" if rev_growth > 0 else "declined"
+        perf_parts.append(f"Revenue {direction} {abs(rev_growth)*100:.1f}% YoY to ¥{_format_number(revenue)}")
+    elif revenue:
+        perf_parts.append(f"Revenue reached ¥{_format_number(revenue)}")
     if op_growth is not None and op_profit:
-        direction = "expanding" if op_growth > 0 else "contracting"
-        perf_parts.append(f"operating profit {direction} {abs(op_growth)*100:.1f}% to ¥{_format_number(op_profit)}")
+        if op_growth > 0:
+            perf_parts.append(f"while operating income expanded {op_growth*100:.1f}% to ¥{_format_number(op_profit)}")
+        else:
+            perf_parts.append(f"while operating income contracted {abs(op_growth)*100:.1f}% to ¥{_format_number(op_profit)}")
+    elif op_profit:
+        perf_parts.append(f"with operating income of ¥{_format_number(op_profit)}")
+    if net_income:
+        perf_parts.append(f"and net income of ¥{_format_number(net_income)}")
+    business_performance = ", ".join(perf_parts) + "." if perf_parts else ""
+    # EPS + ROE trajectory
+    roe_parts = []
+    if eps:
+        roe_parts.append(f"EPS of ¥{eps:,.1f}")
     if roe:
-        perf_parts.append(f"ROE stands at {roe*100:.1f}%")
-    business_performance = ", ".join(perf_parts) + "." if perf_parts else f"{company_name} financial performance is detailed in the latest EDINET filings."
+        roe_str = f"ROE of {roe*100:.1f}%"
+        if prev_roe:
+            if roe > prev_roe:
+                roe_str += f", improving from {prev_roe*100:.1f}% in the prior year"
+            elif roe < prev_roe:
+                roe_str += f", declining from {prev_roe*100:.1f}% in the prior year"
+        roe_parts.append(roe_str)
+    if roe_parts:
+        business_performance += " " + " and ".join(roe_parts) + "."
+    # DPS + payout
+    if dps and dps > 0:
+        payout_str = f"DPS of ¥{dps:,.1f}"
+        if eps and eps > 0:
+            payout_ratio = dps / eps * 100
+            payout_str += f" ({payout_ratio:.0f}% payout ratio)"
+        business_performance += f" {payout_str}."
+    # OCF + capex
     if cfo:
-        cfo_ni = ""
+        cfo_str = f"Operating cash flow of ¥{_format_number(cfo)}"
         if net_income and net_income > 0:
-            ratio = cfo / net_income
-            cfo_ni = f" ({ratio:.1f}x net income)" if ratio > 0 else ""
-        business_performance += f" Operating cash flow of ¥{_format_number(cfo)}{cfo_ni} provides insight into earnings quality."
+            cfo_str += f" ({cfo/net_income:.1f}x net income)"
+        business_performance += f" {cfo_str}."
+    if capex:
+        business_performance += f" Capital expenditure was ¥{_format_number(abs(capex))}."
 
     # --- material_note ---
-    material_note = f"{company_name} operates in the {sector} sector — investors should monitor industry-specific regulatory and competitive developments."
+    # Try to be specific based on available data
+    if rev_growth is not None and rev_growth < -0.05:
+        material_note = (
+            f"Revenue decline of {abs(rev_growth)*100:.1f}% signals potential structural headwinds; "
+            f"management's ability to stabilize top-line growth is the key near-term catalyst."
+        )
+    elif op_growth is not None and op_growth < -0.10 and op_profit:
+        material_note = (
+            f"Operating profit contraction of {abs(op_growth)*100:.1f}% despite revenue growth suggests margin pressure; "
+            f"cost discipline and pricing power are critical to restoring profitability trajectory."
+        )
+    elif roe and roe < 0.05:
+        material_note = (
+            f"ROE of {roe*100:.1f}% falls below cost-of-equity threshold for most Japanese equity investors; "
+            f"capital efficiency improvement is the dominant investor concern."
+        )
+    else:
+        material_note = (
+            f"Operating in the {sector} sector with ¥{_format_number(revenue) if revenue else '—'} revenue base; "
+            f"sector-level regulatory changes and competitive dynamics represent the primary monitoring points for investors."
+        )
 
     # --- investment_thesis ---
     investment_thesis = []
     if revenue and op_margin:
-        quality = "demonstrating solid profitability" if op_margin > 0.08 else "reflecting competitive industry dynamics"
-        investment_thesis.append(
-            f"Generated revenue of ¥{_format_number(revenue)} with {op_margin*100:.1f}% operating margin, {quality}."
-        )
+        if op_margin > 0.15:
+            investment_thesis.append(
+                f"¥{_format_number(revenue)} revenue with {op_margin*100:.1f}% operating margin demonstrates premium pricing power in the {sector} sector."
+            )
+        elif op_margin > 0.08:
+            investment_thesis.append(
+                f"¥{_format_number(revenue)} revenue base with {op_margin*100:.1f}% operating margin reflects solid competitive positioning."
+            )
+        else:
+            investment_thesis.append(
+                f"¥{_format_number(revenue)} revenue scale provides platform for margin improvement from current {op_margin*100:.1f}% operating margin."
+            )
     if roe and roe > 0.06:
         investment_thesis.append(
-            f"ROE of {roe*100:.1f}% {'exceeds' if roe > 0.08 else 'approaches'} the typical cost of equity for Japanese companies."
+            f"ROE of {roe*100:.1f}% exceeds typical 8% cost-of-equity threshold, indicating genuine shareholder value creation."
         )
-    if cfo and cfo > 0:
+    if cfo and cfo > 0 and revenue:
+        ocf_margin = cfo / revenue * 100
         investment_thesis.append(
-            f"Positive operating cash flow of ¥{_format_number(cfo)} supports operations and shareholder returns."
+            f"Operating cash flow of ¥{_format_number(cfo)} ({ocf_margin:.1f}% of revenue) supports dividends, buybacks, and reinvestment."
         )
-    investment_thesis.append(f"Listed on the TSE under ticker {stock_code}, operating in the {sector} sector.")
+    if eq_ratio:
+        if eq_ratio > 0.5:
+            investment_thesis.append(
+                f"Conservative balance sheet with {eq_ratio*100:.0f}% equity ratio provides M&A and capital return optionality."
+            )
+        elif eq_ratio > 0.3:
+            investment_thesis.append(
+                f"Balanced capital structure with {eq_ratio*100:.0f}% equity ratio supports stable investment-grade credit profile."
+            )
+        else:
+            investment_thesis.append(
+                f"Leveraged balance sheet with {eq_ratio*100:.0f}% equity ratio amplifies returns but requires monitoring."
+            )
     investment_thesis = investment_thesis[:4]
 
     # --- bull_case ---
     bull_case = []
-    if rev_growth and rev_growth > 0:
+    if rev_growth and rev_growth > 0 and revenue:
         bull_case.append(
-            f"Revenue growth of {rev_growth*100:.1f}% YoY demonstrates positive business momentum, "
-            f"with top-line reaching ¥{_format_number(revenue)} in the latest period."
+            f"Revenue growth of {rev_growth*100:.1f}% YoY to ¥{_format_number(revenue)} demonstrates expanding market position "
+            f"with potential for further share gains."
         )
-    if roe and roe > 0.06:
+    if roe and roe > 0.08 and dps and dps > 0 and eps and eps > 0:
+        payout = dps / eps * 100
         bull_case.append(
-            f"ROE of {roe*100:.1f}% indicates value creation for shareholders with potential for further improvement."
+            f"ROE of {roe*100:.1f}% with {payout:.0f}% payout ratio at DPS ¥{dps:,.0f}; earnings quality supports dividend growth."
+        )
+    elif roe and roe > 0.06:
+        bull_case.append(
+            f"ROE of {roe*100:.1f}% is above cost-of-equity, with room for improvement through operational leverage."
         )
     if not bull_case:
         bull_case = [
-            "Financial data suggests stable operations with established market presence.",
-            "Listed company with public disclosure requirements enabling transparent monitoring.",
+            f"¥{_format_number(revenue) if revenue else '—'} revenue scale and TSE listing provide liquidity and transparency.",
+            "Established market position with potential for margin expansion through operational efficiency gains.",
         ]
 
     # --- bear_case ---
     bear_case = []
     if rev_growth is not None and rev_growth < 0:
         bear_case.append(
-            f"Revenue decline of {abs(rev_growth)*100:.1f}% YoY raises concerns about demand sustainability."
+            f"Revenue decline of {abs(rev_growth)*100:.1f}% YoY raises structural demand concerns; further contraction would pressure fixed-cost absorption."
         )
-    if op_margin and op_margin < 0.05:
+    elif op_margin and op_margin < 0.05:
         bear_case.append(
-            f"Operating margin of {op_margin*100:.1f}% indicates limited pricing power or cost pressures."
+            f"Operating margin of {op_margin*100:.1f}% leaves limited buffer against cost inflation or demand slowdown."
+        )
+    if roe and roe < 0.08:
+        bear_case.append(
+            f"ROE of {roe*100:.1f}% below 8% cost-of-equity benchmark; sustained underperformance risks governance pressure from institutional shareholders."
+        )
+    elif op_growth is not None and op_growth < 0:
+        bear_case.append(
+            f"Operating profit contraction of {abs(op_growth)*100:.1f}% despite revenue growth signals margin erosion from rising input costs or competitive pricing."
         )
     if not bear_case:
         bear_case = [
-            "Market and macroeconomic conditions may impact future performance.",
-            "Competitive dynamics and industry-specific risks require ongoing monitoring.",
+            f"Sector-level competitive intensity in {sector} could pressure margins and market share.",
+            "Macroeconomic headwinds including yen volatility and domestic demand softening represent ongoing risk factors.",
         ]
 
     return {
@@ -4516,6 +4955,45 @@ def _build_fallback_narrative(payload: Dict) -> Dict[str, Any]:
         "disclosures": [],
         "tags": [],
     }
+
+
+_BOILERPLATE_PHRASES = [
+    "operates in the",
+    "investors should monitor industry-specific",
+    "competitive dynamics and industry-specific risks require",
+    "market and macroeconomic conditions may impact",
+    "listed on the tse under ticker",
+    "financial data suggests stable operations",
+    "public disclosure requirements enabling transparent",
+]
+
+
+def _is_narrative_generic(narrative: Dict[str, Any]) -> bool:
+    """Return True if the narrative contains generic boilerplate instead of specific analysis."""
+    if not isinstance(narrative, dict):
+        return True
+    # Check material_note — the strongest signal of generic output
+    note = (narrative.get("material_note") or "").lower()
+    if any(bp in note for bp in _BOILERPLATE_PHRASES[:3]):
+        return True
+    # Check company_profile — should NOT start with generic "operates in" pattern
+    profile = (narrative.get("company_profile") or narrative.get("summary_text") or "").lower()
+    if profile and profile.lstrip().startswith("(") and "operates in the" in profile[:80]:
+        return True
+    # Check bull/bear cases for boilerplate
+    for case_key in ("bull_case", "bear_case"):
+        cases = narrative.get(case_key) or []
+        if isinstance(cases, list):
+            for item in cases:
+                if isinstance(item, str) and any(bp in item.lower() for bp in _BOILERPLATE_PHRASES[3:]):
+                    return True
+    # Check investment_thesis for filler
+    thesis = narrative.get("investment_thesis") or narrative.get("company_bullets") or []
+    if isinstance(thesis, list):
+        for item in thesis:
+            if isinstance(item, str) and any(bp in item.lower() for bp in _BOILERPLATE_PHRASES[4:]):
+                return True
+    return False
 
 
 def generate_dashboard_narrative(payload: Dict, on_progress=None, on_event=None) -> Dict[str, Any]:
@@ -4594,6 +5072,29 @@ def generate_dashboard_narrative(payload: Dict, on_progress=None, on_event=None)
         for key, value in fallback.items():
             if not narrative.get(key):
                 narrative[key] = value
+
+    # --- Quality check: replace generic boilerplate with data-driven fallback ---
+    if _is_narrative_generic(narrative):
+        if on_event:
+            on_event("warning", "LLM narrative too generic — enriching with data-driven content")
+        fallback = _build_fallback_narrative(payload)
+        # Replace ONLY the generic fields, keep LLM fields that are actually good
+        for key in ("company_profile", "business_performance", "material_note",
+                     "investment_thesis", "bull_case", "bear_case",
+                     "summary_text", "outlook_summary", "company_bullets"):
+            narr_val = narrative.get(key)
+            fb_val = fallback.get(key)
+            if not fb_val:
+                continue
+            # Replace if the LLM version is generic/boilerplate
+            if isinstance(narr_val, str):
+                if any(bp in narr_val.lower() for bp in _BOILERPLATE_PHRASES):
+                    narrative[key] = fb_val
+                elif len(narr_val) < 50:  # Too short
+                    narrative[key] = fb_val
+            elif isinstance(narr_val, list):
+                if any(isinstance(item, str) and any(bp in item.lower() for bp in _BOILERPLATE_PHRASES) for item in narr_val):
+                    narrative[key] = fb_val
     # Only translate specific fields that might contain Japanese (shareholder names,
     # corporate info, etc.).  Do NOT re-translate summary_text, outlook_summary,
     # bull_case, or bear_case — the main LLM prompt already writes these in English
@@ -4835,12 +5336,38 @@ def _build_corporate_info_final(
             if m:
                 founded = m.group(1).strip().rstrip(",;.")
 
-    return {
+    result = {
         "president": _pick("president", "representative"),
         "founded": founded,
         "employees": _pick("employees", "employees"),
         "head_office": _pick("head_office", "head_office"),
     }
+    # Final safety: strip any Japanese from all corporate info fields
+    for k, v in result.items():
+        if isinstance(v, str) and _contains_japanese(v):
+            cleaned = _strip_jp_from_parenthetical(v)
+            if _contains_japanese(cleaned):
+                cleaned = _strip_japanese_from_text(cleaned)
+            result[k] = cleaned or v
+    return result
+
+
+def _ensure_english_narrative(outlook: Dict[str, Any]) -> Dict[str, Any]:
+    """Defense-in-depth: strip any Japanese characters that leaked into narrative fields."""
+    for key in ("company_profile", "business_performance", "material_note",
+                "summary_text", "outlook_summary"):
+        val = outlook.get(key)
+        if isinstance(val, str) and _contains_japanese(val):
+            outlook[key] = _strip_japanese_from_text(val)
+    for key in ("investment_thesis", "bull_case", "bear_case",
+                "company_bullets"):
+        val = outlook.get(key)
+        if isinstance(val, list):
+            outlook[key] = [
+                _strip_japanese_from_text(item) if isinstance(item, str) and _contains_japanese(item) else item
+                for item in val
+            ]
+    return outlook
 
 
 def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[str, Any]:
@@ -5201,34 +5728,76 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
     try:
         has_jp = any(_contains_japanese(mh.get("name", "")) for mh in major_shareholders)
         if has_jp and major_shareholders:
-            names_for_llm = json.dumps(
-                [{"original": mh.get("name", "")} for mh in major_shareholders],
-                ensure_ascii=False,
-            )
-            llm_client = LlmClient()
-            translated_raw = llm_client.translate_and_classify_shareholders(names_for_llm)
-            translated_list = _safe_parse_json_array(translated_raw)
-            lookup = {}
-            for item in translated_list:
-                orig = item.get("original", "")
-                if orig:
-                    lookup[orig] = {
-                        "english": item.get("english", orig),
-                        "type": item.get("type", "Corporate"),
-                    }
+            # Step 1: Apply static dictionary first (instant, covers most common names)
             for mh in major_shareholders:
                 orig_name = mh.get("name", "")
-                match = lookup.get(orig_name)
-                if match:
-                    mh["name_jp"] = orig_name
-                    mh["name"] = match["english"]
-                    sh_type = match["type"]
+                if _contains_japanese(orig_name):
+                    translated = _translate_jp_text(orig_name)
+                    if translated != orig_name:
+                        mh["name_jp"] = orig_name
+                        mh["name"] = translated
+
+            # Step 2: LLM translation for remaining Japanese names + classification
+            still_jp = [i for i, mh in enumerate(major_shareholders) if _contains_japanese(mh.get("name", ""))]
+            if still_jp:
+                names_for_llm = json.dumps(
+                    [{"original": major_shareholders[i].get("name", "")} for i in still_jp],
+                    ensure_ascii=False,
+                )
+                llm_client = LlmClient()
+                translated_raw = llm_client.translate_and_classify_shareholders(names_for_llm)
+                translated_list = _safe_parse_json_array(translated_raw)
+                # Use positional matching (more robust than name matching)
+                for pos, idx in enumerate(still_jp):
+                    if pos < len(translated_list):
+                        item = translated_list[pos]
+                        eng = item.get("english") or item.get("name") or ""
+                        # Strip Japanese from parenthetical (LLM may keep original in parens)
+                        eng = _strip_jp_from_parenthetical(eng)
+                        if eng and not _contains_japanese(eng):
+                            major_shareholders[idx]["name_jp"] = major_shareholders[idx].get("name", "")
+                            major_shareholders[idx]["name"] = eng
+                        sh_type = item.get("type", "Corporate")
+                        major_shareholders[idx]["type"] = sh_type
+                        major_shareholders[idx]["type_badge"] = _SHAREHOLDER_TYPE_BADGES.get(
+                            sh_type, {"label": sh_type[:4].upper(), "color": "#6B7280"}
+                        )
+
+            # Step 3: Classify all shareholders (including those translated by static dict)
+            for mh in major_shareholders:
+                if "type_badge" not in mh:
+                    name = mh.get("name", "").lower()
+                    if any(kw in name for kw in ["trust bank", "custody", "master trust"]):
+                        sh_type = "Institution"
+                    elif any(kw in name for kw in ["fund", "asset management", "investment"]):
+                        sh_type = "Fund"
+                    elif any(kw in name for kw in ["treasury", "treasury stock"]):
+                        sh_type = "Treasury"
+                    elif any(kw in name for kw in ["government", "norges", "gpif"]):
+                        sh_type = "Government"
+                    else:
+                        sh_type = "Corporate"
                     mh["type"] = sh_type
                     mh["type_badge"] = _SHAREHOLDER_TYPE_BADGES.get(
                         sh_type, {"label": sh_type[:4].upper(), "color": "#6B7280"}
                     )
     except Exception:
         pass  # Graceful fallback — keep original names
+    # Final pass: strip any remaining Japanese from shareholder names
+    for mh in major_shareholders:
+        name = mh.get("name", "")
+        if _contains_japanese(name):
+            cleaned = _strip_jp_from_parenthetical(name)
+            if cleaned and not _contains_japanese(cleaned):
+                mh["name"] = cleaned
+            else:
+                # Try static translation
+                translated = _translate_jp_text(name)
+                if not _contains_japanese(translated):
+                    mh["name"] = translated
+                else:
+                    # Last resort: strip all Japanese characters
+                    mh["name"] = _strip_japanese_from_text(translated)
 
     # --- Layered ownership mix pipeline (with validation) ---
 
@@ -5510,6 +6079,40 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             for it in revenue_mix
         ]
 
+    # Stage 6: Filter non-segment items + translate Japanese → English
+    if isinstance(revenue_mix, list) and revenue_mix:
+        # 6a: Remove non-segment items (balance sheet, cash flow, dates, stock classes)
+        revenue_mix = [
+            it for it in revenue_mix
+            if isinstance(it, dict) and not _is_non_segment_item(it.get("segment", ""))
+        ]
+        # 6b: Clean up numbered prefixes
+        for it in revenue_mix:
+            if isinstance(it, dict) and it.get("segment"):
+                it["segment"] = _clean_segment_name(it["segment"])
+        # 6c: Translate any Japanese segment names to English via LLM
+        jp_indices = [
+            i for i, it in enumerate(revenue_mix)
+            if isinstance(it, dict) and _contains_japanese(it.get("segment", ""))
+        ]
+        if jp_indices:
+            jp_names = [revenue_mix[i]["segment"] for i in jp_indices]
+            try:
+                from app.services.llm import LlmClient
+                _llm = LlmClient()
+                translated = _llm.translate_segment_names(jp_names)
+                for idx, eng_name in zip(jp_indices, translated):
+                    revenue_mix[idx]["segment"] = eng_name
+            except Exception:
+                pass  # keep Japanese names rather than crash
+        # 6d: Re-truncate after translation
+        for it in revenue_mix:
+            if isinstance(it, dict) and it.get("segment"):
+                it["segment"] = _truncate_name(it["segment"])
+        # 6e: Recalculate percentages if items were removed
+        if revenue_mix and not _has_valid_pcts(revenue_mix):
+            revenue_mix = _compute_pcts_from_revenue(revenue_mix)
+
     # ── Peer Benchmarking: use real data from _fetch_peer_benchmarking ──
     real_peer_data = payload.get("peer_benchmarking") or {}
     real_peers = real_peer_data.get("peers") or []
@@ -5569,10 +6172,10 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
         for doc in edinet_docs[:3]:
             disclosures.append({
                 "date": doc.get("submit_date") or doc.get("date"),
-                "title": doc.get("description") or doc.get("doc_type") or "EDINET filing",
+                "title": _translate_jp_text(doc.get("description") or doc.get("doc_type") or "EDINET filing"),
                 "detail": "Recent corporate filing.",
             })
-    
+
     # Append 5% filings to disclosures for visibility
     try:
         large_filings = _get_edinet_large_holders(code)
@@ -5580,14 +6183,26 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             extra_disclosures = [
                 {
                     "date": f["date"],
-                    "title": f"5% Rule Filing: {f['filer']}",
-                    "detail": f["type"][:100],
+                    "title": f"5% Rule Filing: {_translate_jp_text(f['filer'])}",
+                    "detail": _translate_jp_text(f["type"][:100]),
                 }
                 for f in large_filings[:5]
             ]
             disclosures = extra_disclosures + disclosures
     except Exception:
         pass
+    # Translate any remaining Japanese in disclosure titles, then strip residual
+    for d in disclosures:
+        if isinstance(d, dict):
+            if _contains_japanese(d.get("title", "")):
+                d["title"] = _translate_jp_text(d["title"])
+            if _contains_japanese(d.get("detail", "")):
+                d["detail"] = _translate_jp_text(d["detail"])
+            # Final safety: strip any Japanese that translation didn't cover
+            if _contains_japanese(d.get("title", "")):
+                d["title"] = _strip_japanese_from_text(d["title"])
+            if _contains_japanese(d.get("detail", "")):
+                d["detail"] = _strip_japanese_from_text(d["detail"])
 
     avg_volume = _avg_volume(price_rows)
     week_high = price_kpis.get("range_52w_high")
@@ -5630,12 +6245,12 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
         if not raw:
             return "TSE"
         text = str(raw).split("\n")[0].strip()
-        # Shorten common long exchange strings
-        if "Prime" in text:
+        # Shorten common long exchange strings (English and Japanese)
+        if "Prime" in text or "プライム" in text:
             return "TSE Prime"
-        if "Standard" in text:
+        if "Standard" in text or "スタンダード" in text:
             return "TSE Standard"
-        if "Growth" in text:
+        if "Growth" in text or "グロース" in text or "マザーズ" in text:
             return "TSE Growth"
         if len(text) > 60:
             # Try to extract first meaningful exchange name
@@ -5650,14 +6265,12 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
     safe_name_jp = _clean_header_name(name_jp, 80)
     safe_name_en = _clean_header_name(name_en, 100)
     raw_exchange = company_info.get("market") or profile.get("listed_markets") or "TSE"
-    safe_exchange = _clean_exchange(raw_exchange)
+    safe_exchange = _clean_exchange(_translate_jp_text(raw_exchange))
     if is_etf:
         safe_sector = f"Exchange-Traded Fund ({fund_type})" if fund_type else "Exchange-Traded Fund"
     else:
-        safe_sector = _clean_header_name(
-            company_info.get("sector") or payload.get("sector") or _classify_sector_stub(payload.get("stock_code"), "Homebuilding / Residential Real Estate"),
-            60,
-        )
+        raw_sector = company_info.get("sector") or payload.get("sector") or _classify_sector_stub(payload.get("stock_code"), "Homebuilding / Residential Real Estate")
+        safe_sector = _clean_header_name(_translate_jp_text(raw_sector), 60)
     # Sector code (TOPIX-33 sector number) for header display
     _sector_code = listed_info.get("Sector33Code") or listed_info.get("S33Cd") or ""
     if _sector_code:
@@ -5733,7 +6346,7 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             "tags": header_tags,
         },
         "kpi_ribbon": kpi,
-        "narrative_outlook": {
+        "narrative_outlook": _ensure_english_narrative({
             # New format fields
             "company_profile": narrative.get("company_profile") or narrative.get("summary_text") or "",
             "business_performance": narrative.get("business_performance") or narrative.get("outlook_summary") or "",
@@ -5745,7 +6358,7 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             "summary_text": narrative.get("company_profile") or narrative.get("summary_text") or "",
             "company_bullets": narrative.get("investment_thesis") or narrative.get("company_bullets") or [],
             "outlook_summary": narrative.get("business_performance") or narrative.get("outlook_summary") or "",
-        },
+        }),
         "charts_data": {
             "roe": roe_series,
             "ocf": ocf_series,

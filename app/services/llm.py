@@ -219,35 +219,58 @@ These are non-recommendation outputs; do not issue a rating or target price.
             "OUTPUT FORMAT: You MUST return a STRICT JSON object with exactly the sections below. "
             "No markdown fences, no commentary outside the JSON.\n\n"
             "SECTION REQUIREMENTS:\n\n"
-            "1. company_profile (string — EXACTLY 100-120 words, concise single paragraph):\n"
-            "   Investor-grade company introduction. Cover:\n"
-            "   - Founding year, revenue scale (¥B/¥T), and core business pillars\n"
-            "   - Operating margins vs peers, employee count, geographic footprint\n"
-            "   - Current strategic plan (by name if known)\n"
-            "   STRICT: Do NOT exceed 120 words. Be dense and specific.\n\n"
-            "2. business_performance (string — EXACTLY 80-100 words, concise single paragraph):\n"
-            "   Weave together with exact numbers:\n"
-            "   - Revenue and operating income with ¥ figures and YoY growth %\n"
-            "   - EPS, ROE trajectory, DPS and payout ratio\n"
-            "   - The single most important financial trend and why it matters\n"
-            "   STRICT: Do NOT exceed 100 words. Dense analytical prose, not a list.\n\n"
-            "3. material_note (string — 1-2 sentences, MAX 40 words):\n"
+            "1. company_profile (string — 120-180 words, DENSE single paragraph):\n"
+            "   Institutional-grade company introduction. You MUST cover ALL of these:\n"
+            "   - Company English name with ticker, founding year/history (e.g. 'spun off from X in 1972', 'traces founding to 1887')\n"
+            "   - Headquarters location (city, prefecture)\n"
+            "   - Revenue scale in ¥B or ¥T and core business pillars with SPECIFIC product/service names\n"
+            "   - Segment breakdown: name each reporting segment and their revenue contributions\n"
+            "   - Employee count, operating margin compared to sector peers (cite the sector median)\n"
+            "   - Current mid-term strategic plan BY NAME if known (e.g. 'Vista 2027', 'Toyota Environmental Challenge 2050')\n"
+            "   - Global footprint: key subsidiaries, JVs, or geographic presence\n"
+            "   Write like the analyst knows this company deeply. NEVER use generic phrases like 'operates in the X sector'.\n"
+            "   EXAMPLE: 'FANUC Corporation, spun off from Fujitsu in 1972 and headquartered in Oshino, Yamanashi, is the world's "
+            "dominant manufacturer of CNC controllers, industrial robots, and ROBOMACHINE systems. Commanding an estimated 50%+ global "
+            "share in CNC controllers...'\n\n"
+            "2. business_performance (string — 120-180 words, DENSE single paragraph):\n"
+            "   Weave ALL of these together with exact ¥ figures:\n"
+            "   - Revenue with YoY growth % and ¥ figure\n"
+            "   - Operating income with YoY growth % and ¥ figure, noting recovery/decline context vs prior years\n"
+            "   - Net income with ¥ figure\n"
+            "   - EPS with ¥ figure, ROE trajectory across multiple years (e.g. 'ROE of 8.6% marks recovery from FY2024 trough of 8.0%, but remains below FY2023 peak of 10.8%')\n"
+            "   - DPS with ¥ figure AND payout ratio %\n"
+            "   - Buyback program details if any (amount, shares, timeline, execution progress)\n"
+            "   - Capex trend (¥ figure, vs prior year)\n"
+            "   - Final sentence: identify THE single most important financial trend and explain WHY it matters\n"
+            "   NEVER just list numbers — weave them into analytical prose showing cause and effect.\n"
+            "   EXAMPLE: 'FY2025 sales reached ¥797B (+0.3% YoY), while operating income recovered to ¥159B (+12% YoY) and net "
+            "income rose to ¥148B after a ¥171B peak in FY2023. DPS increased to ¥94.39 (70% payout ratio)...'\n\n"
+            "3. material_note (string — 2-3 sentences, 30-50 words):\n"
             "   The single most important risk or catalyst right now.\n"
-            "   Be specific — name the event, regulation, or structural shift.\n\n"
+            "   MUST be company-specific. Name the exact event, regulation, product, or structural shift.\n"
+            "   NEVER write generic boilerplate like 'investors should monitor industry developments'.\n"
+            "   EXAMPLE: 'Vista 2027 Stage I missed new-product sales targets by approximately 45%; Stage II launches with a ¥65B "
+            "operating profit target, making execution in functional materials the decisive near-term catalyst.'\n\n"
             "4. investment_thesis (array of EXACTLY 4 strings):\n"
-            "   Each bullet is ONE sentence (15-20 words), data-backed.\n"
-            "   Key reasons to own or watch the stock.\n\n"
+            "   Each bullet is 1-2 sentences, 15-25 words, citing SPECIFIC competitive advantages.\n"
+            "   Name products, market shares, technologies, geographic positions, or financial metrics.\n"
+            "   NEVER write generic bullets like 'Listed on TSE' or 'operates in X sector'.\n"
+            "   EXAMPLE: 'World-leading ~50% global CNC controller market share; unrivaled installed base drives recurring service revenue'\n\n"
             "5. bull_case (array of EXACTLY 2 strings):\n"
-            "   Each 1-2 sentences (25-30 words max) with specific upside scenario.\n\n"
+            "   Each 1-2 sentences (25-40 words) with SPECIFIC upside scenario and numbers.\n"
+            "   EXAMPLE: 'ROE sustained above 17% for five straight years; 65% payout ratio with active ¥9B buyback rewards holders.'\n\n"
             "6. bear_case (array of EXACTLY 2 strings):\n"
-            "   Each 1-2 sentences (25-30 words max) with specific downside risk.\n\n"
-            "WRITING RULES:\n"
-            "- Be SPECIFIC: name products, brands, projects, strategy names. Never generic.\n"
-            "- Use REAL NUMBERS from the data: revenue in ¥B/¥T, margins %, ROE, DPS, EPS, OCF.\n"
-            "- Compute derived metrics: OCF/NI ratio, capex/sales %, payout ratio, revenue CAGR.\n"
-            "- Reference MULTI-YEAR TRENDS: 'ROE improved from 5.2% to 8.0%' not just 'ROE is 8.0%'.\n"
-            "- ALL output MUST be in English. Translate Japanese product names to English/romaji.\n"
-            "- Use citations [id] from provided sources when available.\n"
+            "   Each 1-2 sentences (25-40 words) with SPECIFIC downside risk and numbers.\n"
+            "   NEVER write 'market conditions may impact performance' — name the actual risk.\n"
+            "   EXAMPLE: 'PER of 40x and PBR of 3.4x price perfection; ROE of 8.6% well below historic 10.8% peak leaves valuation vulnerable.'\n\n"
+            "CRITICAL WRITING RULES:\n"
+            "- Be SPECIFIC: name products, brands, projects, subsidiaries, JVs, strategy names. NEVER be generic.\n"
+            "- Use REAL NUMBERS from the data: revenue in ¥B/¥T, margins %, ROE, DPS, EPS, OCF, capex.\n"
+            "- Compute derived metrics: OCF/NI ratio, capex/sales %, payout ratio, revenue CAGR, FCF.\n"
+            "- Reference MULTI-YEAR TRENDS: 'ROE improved from 5.2% to 8.0% over three years' not just 'ROE is 8.0%'.\n"
+            "- Show context: compare current vs prior year peaks/troughs, vs sector medians.\n"
+            "- ALL output MUST be in English. NEVER use Japanese characters (hiragana, katakana, kanji) anywhere. "
+            "Always use the English company name, never the Japanese name. Translate any Japanese product or segment names to English.\n"
             "- If unknown, use '—'. Do NOT invent facts.\n"
             "- revenue_mix percentages MUST sum to ~100%. Use EDINET Segment Data as ground truth.\n"
             "- ownership_mix: ONLY populate if explicit ownership data exists. Otherwise all null.\n"
@@ -264,22 +287,22 @@ These are non-recommendation outputs; do not issue a rating or target price.
         schema = """
 Return JSON with EXACTLY this structure:
 {
-  "company_profile": "<Rich investor-grade paragraph — 100+ words covering founding, revenue scale, business pillars, margins, employees, strategy>",
-  "business_performance": "<Dense analytical paragraph — 120+ words covering revenue/OP YoY, EPS, ROE trend, DPS/payout, buybacks, capex, most important trend>",
-  "material_note": "<2-3 sentences on the single most important risk or catalyst right now>",
+  "company_profile": "<120-180 word paragraph: founding/history, HQ, revenue scale, specific segments/products, employee count, margin vs peers, strategy plan name, global footprint>",
+  "business_performance": "<120-180 word paragraph: revenue + YoY%, OP + YoY% vs prior year context, NI, EPS, ROE multi-year trajectory, DPS + payout%, buyback details, capex trend, most important trend + why>",
+  "material_note": "<2-3 sentences: specific company risk/catalyst with names and numbers, NEVER generic>",
   "investment_thesis": [
-    "<Thesis point 1 — data-backed, 1-2 sentences>",
-    "<Thesis point 2 — data-backed, 1-2 sentences>",
-    "<Thesis point 3 — data-backed, 1-2 sentences>",
-    "<Thesis point 4 — data-backed, 1-2 sentences>"
+    "<Specific competitive advantage with product/market share data>",
+    "<Specific operational/structural advantage>",
+    "<Specific financial metric advantage vs peers>",
+    "<Specific strategic/balance sheet advantage>"
   ],
   "bull_case": [
-    "<Bull 1 — 2-3 sentences with specific upside numbers>",
-    "<Bull 2 — 2-3 sentences with specific upside numbers>"
+    "<Specific upside scenario with numbers and timeframe>",
+    "<Specific upside scenario with numbers and timeframe>"
   ],
   "bear_case": [
-    "<Bear 1 — 2-3 sentences with specific downside numbers>",
-    "<Bear 2 — 2-3 sentences with specific downside numbers>"
+    "<Specific downside risk with numbers and valuation context>",
+    "<Specific downside risk with numbers and valuation context>"
   ],
   "major_shareholders": [{"name":"<English name>", "pct":0, "change":"NEW|↑|↓|—"}],
   "cross_holdings": [{"name":"", "ticker":"", "pct_held":0}],
@@ -328,7 +351,7 @@ Return JSON with EXACTLY this structure:
             content = ""
             with client.messages.stream(
                 model=narrative_model,
-                max_tokens=2048,
+                max_tokens=4096,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
                 temperature=0.25,
@@ -342,7 +365,7 @@ Return JSON with EXACTLY this structure:
         else:
             response = client.messages.create(
                 model=narrative_model,
-                max_tokens=2048,
+                max_tokens=4096,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
                 temperature=0.25,
@@ -462,6 +485,41 @@ Rules:
             f"{schema}"
         )
         return self._create_completion(system_prompt, user_prompt)
+
+    def translate_segment_names(self, names: list[str]) -> list[str]:
+        """Translate a list of Japanese segment/business names to concise English.
+
+        Returns a list of the same length with English translations.
+        """
+        if not self.api_key or not names:
+            return names
+        import json as _json
+        system_prompt = (
+            "Translate these Japanese business segment names to concise English (2-6 words each). "
+            "Use standard industry terminology. Examples:\n"
+            "- 自動車事業 → Automotive\n"
+            "- 金融サービス事業 → Financial Services\n"
+            "- 情報通信事業 → Information & Communications\n"
+            "- エンターテインメント事業 → Entertainment\n"
+            "- 不動産事業 → Real Estate\n"
+            "- 電子デバイス事業 → Electronic Devices\n"
+            "- ヘルスケア事業 → Healthcare\n"
+            "- アパレル事業 → Apparel\n"
+            "Return a JSON array of translated strings in the same order. "
+            "Return ONLY the JSON array, no markdown fences."
+        )
+        user_prompt = _json.dumps(names, ensure_ascii=False)
+        try:
+            raw = self._create_completion(system_prompt, user_prompt)
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            result = _json.loads(raw)
+            if isinstance(result, list) and len(result) == len(names):
+                return [str(r).strip()[:40] for r in result]
+        except Exception:
+            pass
+        return names
 
     def translate_json_to_english(self, json_text: str) -> str:
         if not self.api_key:
