@@ -1019,7 +1019,7 @@
           {% if dashboard.column_1_holdings.major_shareholders %}
           {% for item in dashboard.column_1_holdings.major_shareholders %}
           <div class="shareholder-row">
-            <div class="shareholder-name">{{ item.name }}{% if item.type_badge is defined and item.type_badge %}<span class="shareholder-badge" style="background:{{ item.type_badge.color }}">{{ item.type_badge.label }}</span>{% endif %}</div>
+            <div class="shareholder-name">{{ item.name or item.name_jp or '—' }}{% if item.type_badge is defined and item.type_badge %}<span class="shareholder-badge" style="background:{{ item.type_badge.color }}">{{ item.type_badge.label }}</span>{% endif %}</div>
             <div class="shareholder-dots"></div>
             <div class="shareholder-pct mono">
               {% if item.pct is defined and item.pct is not none %}{{ '{:.1f}'.format(item.pct) }}%{% else %}—{% endif %}
@@ -1067,14 +1067,18 @@
         {% endif %}
 
         <div class="data-header" style="margin-top:auto;">STAKES HELD BY THIS COMPANY</div>
+        {% if dashboard.column_1_holdings.cross_holdings %}
         <table class="dense-table">
-          {% for item in dashboard.column_1_holdings.cross_holdings | default([], true) %}
+          {% for item in dashboard.column_1_holdings.cross_holdings %}
           <tr>
-            <td>{{ item.name }} ({{ item.ticker }})</td>
+            <td>{{ item.name }}{% if item.ticker and item.ticker != '—' %} ({{ item.ticker }}){% endif %}</td>
             <td class="mono">{% if item.pct_held is defined and item.pct_held is not none %}{{ '{:.1f}'.format(item.pct_held) }}%{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </table>
+        {% else %}
+        <div style="text-align:center; color:#888; padding:8px 0; font-size:8px;">No cross-holding data available</div>
+        {% endif %}
       </div>
       <div class="col">
         {% set cs = dashboard.capital_structure_section|default({}, true) %}

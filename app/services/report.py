@@ -102,11 +102,70 @@ _SHAREHOLDER_JP_TO_EN = {
     "孫 正義": "Masayoshi Son",
     "三木谷浩史": "Hiroshi Mikitani",
     "三木谷晴子": "Haruko Mikitani",
+    "柳井正": "Tadashi Yanai",
+    "柳井 正": "Tadashi Yanai",
+    "永守重信": "Shigenobu Nagamori",
+    "滝崎武光": "Takemitsu Takizaki",
     "楽天グループ": "Rakuten Group",
     "ソフトバンクグループ": "SoftBank Group",
     "財務大臣": "Minister of Finance",
     "財務省": "Ministry of Finance",
     "日本国政府": "Government of Japan",
+    # Regional / major banks
+    "八十二銀行": "Hachijuni Bank",
+    "静岡銀行": "Shizuoka Bank",
+    "千葉銀行": "Chiba Bank",
+    "横浜銀行": "Bank of Yokohama",
+    "福岡銀行": "Fukuoka Bank",
+    "常陽銀行": "Joyo Bank",
+    "七十七銀行": "77 Bank",
+    "北洋銀行": "North Pacific Bank",
+    "広島銀行": "Hiroshima Bank",
+    "群馬銀行": "Gunma Bank",
+    "北陸銀行": "Hokuriku Bank",
+    "伊予銀行": "Iyo Bank",
+    "中国銀行": "Chugoku Bank",
+    "百五銀行": "Hyakugo Bank",
+    "十六銀行": "Juroku Bank",
+    "山口銀行": "Yamaguchi Bank",
+    "秋田銀行": "Akita Bank",
+    "農林中央金庫": "Norinchukin Bank",
+    "信金中央金庫": "Shinkin Central Bank",
+    "全国共済農業協同組合連合会": "Zenkyoren (JA Mutual Insurance)",
+    "全国農業協同組合連合会": "JA Zen-Noh",
+    "農業協同組合": "Agricultural Cooperative",
+    "伊藤興業": "Ito-Kogyo",
+    "ニトリ商事": "Nitori Shoji",
+    "公益財団法人似鳥国際奨学財団": "Nitori International Scholarship Foundation",
+    "似鳥百百代": "Momoko Nitori",
+    "似鳥百々代": "Momoko Nitori",
+    "公益財団法人": "",  # Public interest foundation prefix - remove
+    # Major corporates
+    "日本電信電話": "NTT",
+    "東京海上日動": "Tokio Marine",
+    "損害保険ジャパン": "Sompo Japan Insurance",
+    "東京電力": "TEPCO",
+    "関西電力": "Kansai Electric",
+    "日本製鉄": "Nippon Steel",
+    "旭硝子": "AGC Inc.",
+    "味の素": "Ajinomoto",
+    "日本たばこ産業": "Japan Tobacco",
+    "三菱商事": "Mitsubishi Corp",
+    "三井物産": "Mitsui & Co.",
+    "伊藤忠商事": "ITOCHU",
+    "住友商事": "Sumitomo Corp",
+    "日本郵便": "Japan Post",
+    "かんぽ生命保険": "Japan Post Insurance",
+    "ゆうちょ銀行": "Japan Post Bank",
+    "日本政策投資銀行": "Development Bank of Japan",
+    "日本トラスティ・サービス信託銀行": "Japan Trustee Services Bank",
+    "資産管理サービス信託銀行": "Trust & Custody Services Bank",
+    "東京海上日動火災保険": "Tokio Marine & Nichido",
+    "損保ジャパン": "Sompo Japan",
+    "あいおいニッセイ同和損害保険": "Aioi Nissay Dowa Insurance",
+    "三菱UFJモルガン・スタンレー証券": "MUFG Morgan Stanley Securities",
+    "ＳＭＢＣ日興証券": "SMBC Nikko Securities",
+    "みずほ証券": "Mizuho Securities",
     # Common katakana transliterations of foreign names
     "ゴールドマン・サックス": "Goldman Sachs",
     "ゴールドマン･サックス": "Goldman Sachs",
@@ -128,6 +187,10 @@ _SHAREHOLDER_JP_TO_EN = {
     "アセットマネジメント": "Asset Management",
     "インターナショナル": "International",
     "セキュリティーズ": "Securities",
+    "カンパニー": "Company",
+    "アンド": "and",
+    "コーポレーション": "Corporation",
+    "ホールディングス": "Holdings",
     "デポジタリーレシートホルダーズ": "Depositary Receipt Holders",
     "デポジタリー": "Depositary",
     "レシートホルダーズ": "Receipt Holders",
@@ -146,6 +209,13 @@ _SHAREHOLDER_JP_TO_EN = {
     "株式会社": "",  # Co., Ltd. - remove
     "(有)": "",
     "（有）": "",
+    # Common kanji terms in shareholder names
+    "証券": "Securities",
+    "自己株式": "Treasury Stock",
+    "保険": "Insurance",
+    "生命": "Life",
+    "銀行": "Bank",
+    "信託": "Trust",
     # Additional foreign entity names in katakana
     "ジャパン": "Japan",
     "アメリカ": "America",
@@ -168,6 +238,13 @@ _SHAREHOLDER_JP_TO_EN = {
     "正義": "Masayoshi",
     "浩史": "Hiroshi",
     "晴子": "Haruko",
+    "豊田章男": "Akio Toyoda",
+    "似鳥昭雄": "Akio Nitori",
+    "似鳥": "Nitori",
+    "前澤友作": "Yusaku Maezawa",
+    "佐治信忠": "Nobutada Saji",
+    "新浪剛史": "Takeshi Niinami",
+    "稲盛和夫": "Kazuo Inamori",
     # Operational terms
     "信託口": "Trust Account",
     "退職給付信託口": "Pension Trust Account",
@@ -177,6 +254,17 @@ _SHAREHOLDER_JP_TO_EN = {
     "運用": "managed by",
     "グループ": "Group",
     "興産": "Kosan",
+    "商事": "Trading",
+    "財団": "Foundation",
+    "奨学": "Scholarship",
+    "国際": "International",
+    "共済": "Mutual Insurance",
+    "連合会": "Federation",
+    "組合": "Association",
+    "全国": "National",
+    "相互": "Mutual",
+    "火災": "Fire",
+    "損害": "Casualty",
 }
 
 # EDINET filing type translations
@@ -214,11 +302,12 @@ def _translate_jp_text(text: str | None) -> str:
     # Try direct sector match
     if text in _SECTOR_JP_TO_EN:
         return _SECTOR_JP_TO_EN[text]
-    # Try shareholder name matching (substring-based)
+    # Try shareholder name matching (substring-based, space-buffered to prevent word joining)
+    # Sort by key length descending so longer matches take priority (e.g. "信託口" before "信託")
     result = text
-    for jp, en in _SHAREHOLDER_JP_TO_EN.items():
+    for jp, en in sorted(_SHAREHOLDER_JP_TO_EN.items(), key=lambda x: len(x[0]), reverse=True):
         if jp in result:
-            result = result.replace(jp, en)
+            result = result.replace(jp, f" {en} " if en else " ")
     # Try filing type matching
     for jp, en in _FILING_TYPE_JP_TO_EN.items():
         if jp in result:
@@ -230,12 +319,19 @@ def _translate_jp_text(text: str | None) -> str:
     # Clean up: replace full-width chars with ASCII equivalents
     result = result.replace("･", " ").replace("＆", "&").replace("・", " ")
     result = result.replace("　", " ").replace("－", "-").replace("（", "(").replace("）", ")")
+    result = result.replace("：", ":").replace("；", ";")
     # Strip Japanese period descriptions like "第29期(2025/01/01-2025/12/31)"
     result = re.sub(r"[－\-]第\d+期.*$", "", result)
     result = re.sub(r"第\d+期", "", result)
-    # Clean double spaces
-    result = re.sub(r"  +", " ", result).strip()
-    return result
+    # Clean double spaces and spacing artifacts from buffered replacements
+    result = re.sub(r"  +", " ", result)
+    # Fix spacing inside parentheses: "( Trust Account )" → "(Trust Account)"
+    result = re.sub(r"\(\s+", "(", result)
+    result = re.sub(r"\s+\)", ")", result)
+    # Fix space before colon/semicolon: "managed by :" → "managed by:"
+    result = re.sub(r"\s+:", ":", result)
+    result = re.sub(r"\s+;", ";", result)
+    return result.strip()
 
 
 def _strip_jp_from_parenthetical(text: str) -> str:
@@ -4312,6 +4408,10 @@ def build_report_payload(
             elif isinstance(capital_projects_raw, dict):
                 capital_projects = capital_projects_raw.get("projects") or capital_projects_raw.get("pipeline") or []
             esg_data = llm_edinet_result.get("esg") or {}
+            # Subsidiaries may be at top-level or inside insights
+            subs = llm_edinet_result.get("subsidiaries") or edinet_insights.get("subsidiaries") or []
+            if isinstance(subs, list) and subs:
+                edinet_insights["subsidiaries"] = subs
 
         # Enrich profile with edinet insights (core_businesses from segments)
         if not merged_profile.get("core_businesses"):
@@ -5767,14 +5867,16 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             for mh in major_shareholders:
                 if "type_badge" not in mh:
                     name = mh.get("name", "").lower()
-                    if any(kw in name for kw in ["trust bank", "custody", "master trust"]):
+                    if any(kw in name for kw in ["trust bank", "custody", "master trust", "depositary", "insurance", "life"]):
                         sh_type = "Institution"
-                    elif any(kw in name for kw in ["fund", "asset management", "investment"]):
+                    elif any(kw in name for kw in ["fund", "asset management", "investment", "capital", "partners", "advisors"]):
                         sh_type = "Fund"
-                    elif any(kw in name for kw in ["treasury", "treasury stock"]):
+                    elif any(kw in name for kw in ["treasury", "treasury stock", "treasury account"]):
                         sh_type = "Treasury"
-                    elif any(kw in name for kw in ["government", "norges", "gpif"]):
+                    elif any(kw in name for kw in ["government", "norges", "gpif", "minister of finance", "ministry"]):
                         sh_type = "Government"
+                    elif any(kw in name for kw in ["bank", "securities", "blackrock", "vanguard", "state street", "goldman", "morgan stanley", "jp morgan"]):
+                        sh_type = "Institution"
                     else:
                         sh_type = "Corporate"
                     mh["type"] = sh_type
@@ -5783,21 +5885,92 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
                     )
     except Exception:
         pass  # Graceful fallback — keep original names
+
+    # Ensure all shareholders have type badges (runs even if translation failed)
+    for mh in major_shareholders:
+        if "type_badge" not in mh:
+            name = mh.get("name", "").lower()
+            if any(kw in name for kw in ["trust bank", "custody", "master trust", "信託銀行", "depositary", "insurance", "life"]):
+                sh_type = "Institution"
+            elif any(kw in name for kw in ["fund", "asset management", "investment", "capital", "partners", "advisors"]):
+                sh_type = "Fund"
+            elif any(kw in name for kw in ["treasury", "treasury stock", "自己株式", "自社株", "treasury account"]):
+                sh_type = "Treasury"
+            elif any(kw in name for kw in ["government", "norges", "gpif", "minister of finance", "ministry"]):
+                sh_type = "Government"
+            elif any(kw in name for kw in ["bank", "securities", "blackrock", "vanguard", "state street", "goldman", "morgan stanley", "jp morgan"]):
+                sh_type = "Institution"
+            else:
+                sh_type = "Corporate"
+            mh["type"] = sh_type
+            mh["type_badge"] = _SHAREHOLDER_TYPE_BADGES.get(
+                sh_type, {"label": sh_type[:4].upper(), "color": "#6B7280"}
+            )
+
     # Final pass: strip any remaining Japanese from shareholder names
     for mh in major_shareholders:
         name = mh.get("name", "")
         if _contains_japanese(name):
+            # Preserve original Japanese as fallback
+            if not mh.get("name_jp"):
+                mh["name_jp"] = name
             cleaned = _strip_jp_from_parenthetical(name)
             if cleaned and not _contains_japanese(cleaned):
                 mh["name"] = cleaned
             else:
-                # Try static translation
                 translated = _translate_jp_text(name)
                 if not _contains_japanese(translated):
                     mh["name"] = translated
                 else:
-                    # Last resort: strip all Japanese characters
-                    mh["name"] = _strip_japanese_from_text(translated)
+                    # Strip Japanese chars but NEVER leave empty — keep original if result is blank
+                    stripped = _strip_japanese_from_text(translated).strip()
+                    mh["name"] = stripped if stripped else name
+
+    # Post-translation cleanup: strip account numbers, trailing digits, clean up artifacts
+    _KNOWN_PERSONS = {
+        "masayoshi son", "tadashi yanai", "shigenobu nagamori", "takemitsu takizaki",
+        "hiroshi mikitani", "haruko mikitani", "akio toyoda", "kazuo inamori",
+        "nobutada saji", "takeshi niinami", "kenichi tanaka", "yusaku maezawa",
+        "akio nitori", "momoko nitori",
+    }
+    for mh in major_shareholders:
+        name = mh.get("name", "")
+        # Strip trailing account/trust numbers (e.g., "JP Morgan Chase Bank385632" → "JP Morgan Chase Bank")
+        name = re.sub(r"(\D)\d{4,}$", r"\1", name)
+        # Strip leading/trailing whitespace and redundant spaces
+        name = re.sub(r"\s{2,}", " ", name).strip()
+        # Remove orphaned parentheses or brackets
+        name = re.sub(r"\(\s*\)", "", name).strip()
+        name = re.sub(r"\[\s*\]", "", name).strip()
+        # Remove standalone artifacts from translation (e.g., lone "Co.", "Ltd.", "Inc.")
+        name_clean = name.strip().rstrip(".,").strip()
+        if name_clean.lower() in ("co", "ltd", "inc", "corp", "co.", "ltd.", "inc.", "corp."):
+            name = ""
+        mh["name"] = name
+
+        # Reclassify known persons wrongly tagged as Corporate
+        name_lower = name.lower()
+        if mh.get("type") != "Person" and name_lower in _KNOWN_PERSONS:
+            mh["type"] = "Person"
+            mh["type_badge"] = _SHAREHOLDER_TYPE_BADGES.get("Person", {"label": "INDV", "color": "#059669"})
+
+    # Remove shareholders with empty or artifact-only names (from translation artifacts)
+    _ARTIFACT_NAMES = {"co", "co.", "ltd", "ltd.", "inc", "inc.", "corp", "corp.", ""}
+    major_shareholders = [
+        mh for mh in major_shareholders
+        if mh.get("name", "").strip() and mh["name"].strip().rstrip(".,").strip().lower() not in _ARTIFACT_NAMES
+    ]
+
+    # Deduplicate shareholders by normalized name (handles reversed name order, e.g., "Akio Nitori" vs "Nitori Akio")
+    _seen_sh_names = set()
+    _deduped_shareholders = []
+    for mh in major_shareholders:
+        # Normalize: lowercase, sort words alphabetically to catch reversed names
+        norm_key = " ".join(sorted(mh["name"].lower().split()))
+        if norm_key not in _seen_sh_names:
+            _seen_sh_names.add(norm_key)
+            _deduped_shareholders.append(mh)
+    major_shareholders = _deduped_shareholders
 
     # --- Layered ownership mix pipeline (with validation) ---
 
@@ -5942,16 +6115,71 @@ def build_dashboard_context(payload: Dict, narrative: Dict[str, Any]) -> Dict[st
             "dps": row.get("dps"),
         })
 
-    cross_holdings = narrative.get("cross_holdings") or []
-    if isinstance(cross_holdings, list):
-        cross_holdings = [
-            {
-                "name": item.get("name") if isinstance(item, dict) else "—",
-                "ticker": item.get("ticker") if isinstance(item, dict) else "—",
-                "pct_held": _coerce_percent_value(item.get("pct_held")) if isinstance(item, dict) else None,
-            }
-            for item in cross_holdings
-        ]
+    # ── Cross-holdings: layered extraction ──
+    # Layer 1: EDINET-extracted subsidiaries (highest reliability)
+    edinet_subsidiaries = (payload.get("edinet_insights") or {}).get("subsidiaries") or []
+    cross_holdings = []
+    if isinstance(edinet_subsidiaries, list) and edinet_subsidiaries:
+        for item in edinet_subsidiaries:
+            if not isinstance(item, dict):
+                continue
+            pct = _coerce_percent_value(item.get("pct_held"))
+            if pct is not None and pct > 0:
+                name = item.get("name", "—")
+                # Translate Japanese names if needed
+                if _contains_japanese(name):
+                    translated = _translate_jp_text(name)
+                    if translated and not _contains_japanese(translated):
+                        name = translated
+                cross_holdings.append({
+                    "name": name,
+                    "ticker": item.get("ticker") or "—",
+                    "pct_held": pct,
+                })
+    # Layer 2: LLM narrative cross_holdings (fallback)
+    if not cross_holdings:
+        narrative_cross = narrative.get("cross_holdings") or []
+        if isinstance(narrative_cross, list):
+            for item in narrative_cross:
+                if not isinstance(item, dict):
+                    continue
+                pct = _coerce_percent_value(item.get("pct_held"))
+                if pct is not None and pct > 0:
+                    cross_holdings.append({
+                        "name": item.get("name") or "—",
+                        "ticker": item.get("ticker") or "—",
+                        "pct_held": pct,
+                    })
+    # Validate: filter out obvious non-company entries (balance sheet items, financial metrics)
+    _CROSS_HOLDINGS_BLACKLIST = {
+        "total assets", "cash", "cash & equiv", "net assets", "equity ratio",
+        "total equity", "net debt", "revenue", "operating income", "net income",
+        "total liabilities", "borrowings", "retained earnings", "goodwill",
+    }
+    validated_holdings = []
+    for h in cross_holdings:
+        name_lower = h["name"].lower().strip()
+        # Skip blacklisted financial terms
+        if any(bl in name_lower for bl in _CROSS_HOLDINGS_BLACKLIST):
+            continue
+        # Skip entries with pct_held that look like currency amounts (> 100%)
+        pct = h.get("pct_held")
+        if pct is not None and pct > 100.1:
+            continue
+        # Skip entries with very short/generic names
+        if len(name_lower) < 3 or name_lower in ("—", "n/a", "none"):
+            continue
+        validated_holdings.append(h)
+
+    # Deduplicate by name and limit to top 8
+    seen_names = set()
+    unique_holdings = []
+    for h in validated_holdings:
+        key = h["name"].lower().strip()
+        if key not in seen_names:
+            seen_names.add(key)
+            unique_holdings.append(h)
+    cross_holdings = sorted(unique_holdings, key=lambda x: x.get("pct_held") or 0, reverse=True)[:8]
 
     # ── Revenue mix: 6-stage fallback pipeline ──
     # Stage 0 = EDINET HTML/XBRL parsed segments (highest accuracy)

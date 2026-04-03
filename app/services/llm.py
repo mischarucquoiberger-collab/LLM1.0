@@ -275,6 +275,16 @@ These are non-recommendation outputs; do not issue a rating or target price.
             "- revenue_mix percentages MUST sum to ~100%. Use EDINET Segment Data as ground truth.\n"
             "- ownership_mix: ONLY populate if explicit ownership data exists. Otherwise all null.\n"
             "- geographic_mix: populate overseas_pct and domestic_pct if revenue breakdown by geography is known. Otherwise null.\n"
+            "- cross_holdings: Extract equity stakes THIS company holds in OTHER listed companies.\n"
+            "  Look in EDINET filings for 主要な関係会社 (major related companies), 子会社 (subsidiaries), "
+            "関連会社 (affiliates/associates), 持分法適用 (equity method affiliates).\n"
+            "  Include: listed subsidiaries, major equity stakes (>10%), and equity method investees.\n"
+            "  Example for SoftBank Group: [{\"name\":\"SoftBank Corp\",\"ticker\":\"9434\",\"pct_held\":40.9},"
+            "{\"name\":\"Z Holdings\",\"ticker\":\"4689\",\"pct_held\":64.5}]\n"
+            "  Example for Toyota: [{\"name\":\"DENSO\",\"ticker\":\"6902\",\"pct_held\":24.2},"
+            "{\"name\":\"Toyota Industries\",\"ticker\":\"6201\",\"pct_held\":24.7}]\n"
+            "  Use ticker codes from the research context. If no ticker is known, use '—'. "
+            "If no cross-holdings data is found, return an empty array [].\n"
         )
 
         report_date = prompt_payload.get("generated_at") or ""
@@ -305,7 +315,7 @@ Return JSON with EXACTLY this structure:
     "<Specific downside risk with numbers and valuation context>"
   ],
   "major_shareholders": [{"name":"<English name>", "pct":0, "change":"NEW|↑|↓|—"}],
-  "cross_holdings": [{"name":"", "ticker":"", "pct_held":0}],
+  "cross_holdings": [{"name":"<English name of subsidiary/investee>", "ticker":"<TSE code or —>", "pct_held":<ownership percentage as number>}],
   "revenue_mix": [{"segment":"short name 2-5 words", "pct":0, "revenue_mm":0}],
   "peers": [{"ticker":"<TSE code>", "name":"<English name>", "mkt_cap_t":0}],
   "corporate_info": {"president":"<English name>", "employees":"<number>", "head_office":"<city, prefecture>"},
@@ -435,6 +445,13 @@ Return JSON with EXACTLY this structure:
             "- Look for サステナビリティ, ESG, 環境, TCFD, 人的資本, "
             "ガバナンス, CO2, 気候変動, 多様性, ダイバーシティ, 人権, コンプライアンス.\n"
             "- Only include items with concrete details from the filing.\n\n"
+            "For subsidiaries:\n"
+            "- Look for 主要な関係会社, 関係会社の状況, 子会社, 関連会社, 持分法適用関連会社, "
+            "連結子会社, グループ会社.\n"
+            "- Extract the company name (translate to English), TSE ticker if listed, "
+            "ownership percentage (議決権比率 or 持分比率), and relationship type.\n"
+            "- Focus on LISTED subsidiaries/affiliates and major unlisted ones (>20% stake).\n"
+            "- Maximum 10 entries. Return [] if no subsidiary data found.\n\n"
             "For summary:\n"
             "- Summarize the filing into 2-3 English sentences.\n"
             "- Focus on business activities, recent changes, and governance signals.\n"
@@ -469,13 +486,17 @@ Return a SINGLE JSON object with ALL of these top-level keys:
     "social": ["Concrete social/HR initiative (1 sentence each)"],
     "governance": ["Concrete governance policy (1 sentence each)"],
     "certifications": ["ISO 14001", "TCFD supporter"]
-  }
+  },
+  "subsidiaries": [
+    {"name": "English name of subsidiary/investee", "ticker": "TSE code or null", "pct_held": 51.0, "relationship": "subsidiary|affiliate|equity_method"}
+  ]
 }
 
 Rules:
 - business_segments: percentages must sum to ~100%, compute from revenue if not stated
 - capital_projects: max 10, amount_mm null if not disclosed, return [] if none found
 - esg: max 5 items per category, use empty arrays if no info, certifications are short labels
+- subsidiaries: max 10, focus on listed subsidiaries/major stakes, pct_held is ownership %, return [] if none found
 - summary: 2-3 sentences, plain English
 """
         user_prompt = (
